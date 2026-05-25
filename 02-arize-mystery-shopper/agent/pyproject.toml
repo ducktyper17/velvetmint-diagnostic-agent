@@ -1,0 +1,76 @@
+[project]
+name = "mystery-shopper-agent"
+version = "0.1.0"
+description = "Voice-AI Mystery Shopper agent. Audits third-party AI customer-support agents and scores them via Arize Phoenix LLM-as-judge experiments."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Mystery Shopper Team" },
+]
+
+dependencies = [
+    # Web framework. Pinned to the 0.110+ line for the modern lifespan API.
+    # TODO: confirm latest patch before submission.
+    "fastapi>=0.110,<1.0",
+    "uvicorn[standard]>=0.27,<1.0",
+
+    # Data validation. v2 is required for the FastAPI 0.110+ surface.
+    "pydantic>=2.5,<3.0",
+    "pydantic-settings>=2.1,<3.0",
+
+    # Google Cloud Vertex AI SDK. We talk to Gemini 3 through this.
+    # TODO: confirm the version that ships Gemini 3 GA bindings; the field is
+    # moving fast and we'd rather pin once we know the deploy works.
+    "google-cloud-aiplatform>=1.60",
+
+    # Arize Phoenix Python SDK. Provides the OTel tracer and helpers.
+    # We pin to a recent major so we can rely on the modern client surface;
+    # TODO: confirm the latest stable on PyPI before submission.
+    "arize-phoenix>=4.0",
+
+    # LLM-as-judge evaluator package. Separate from the core SDK.
+    # TODO: confirm the latest stable; check whether arize-phoenix-evals
+    # has merged into arize-phoenix proper by the time we ship.
+    "arize-phoenix-evals>=0.16",
+
+    # Python MCP client. Used to talk to @arizeai/phoenix-mcp over stdio.
+    # TODO: confirm; the official package name on PyPI may be "mcp" or
+    # "modelcontextprotocol" depending on release timing.
+    "mcp>=1.0",
+
+    # HTTP client for talking to target AIs. httpx is the FastAPI-native choice.
+    "httpx>=0.27,<1.0",
+
+    # Structured logging. Keeps trace/span correlation readable in Cloud Run logs.
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["main.py", "scenarios.py", "judge.py", "prompts.py"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true

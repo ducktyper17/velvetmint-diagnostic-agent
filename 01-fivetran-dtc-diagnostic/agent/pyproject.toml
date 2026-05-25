@@ -1,0 +1,100 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dtc-diagnostic-agent"
+version = "0.1.0"
+description = "Autonomous DTC brand health diagnostic agent (Google Cloud Rapid Agent Hackathon, Fivetran track)"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Apache-2.0" }
+authors = [{ name = "DTC Diagnostic Agent Team" }]
+
+# Notes on dependencies:
+#   * For the Vertex AI / Gemini 3 integration we rely on the official
+#     `google-cloud-aiplatform` SDK, which exposes the `vertexai` namespace.
+#     Google Cloud "Agent Builder" itself does NOT ship as a separate PyPI
+#     package today — orchestration code lives inside the same SDK
+#     (vertexai.preview.reasoning_engines / agent_engines). If a dedicated
+#     Agent Builder Python SDK is published before June 11, swap it in here.
+#   * `mcp` is the official Anthropic-led Python SDK for the Model Context
+#     Protocol, hosted at https://pypi.org/project/mcp/.
+#   * Versions below are pinned conservatively. Anything that may have moved
+#     between scaffolding and build-day is flagged with a TODO so we can
+#     bump intentionally rather than blindly.
+
+dependencies = [
+  # Web service
+  "fastapi>=0.115.0,<1.0",            # TODO: confirm latest version on build day
+  "uvicorn[standard]>=0.32.0,<1.0",   # TODO: confirm latest version on build day
+  "sse-starlette>=2.1.0,<3.0",        # SSE helpers for FastAPI; TODO: confirm latest
+
+  # Schemas / config
+  "pydantic>=2.8.0,<3.0",
+  "pydantic-settings>=2.5.0,<3.0",
+
+  # Vertex AI / Gemini 3
+  "google-cloud-aiplatform>=1.71.0",  # TODO: confirm latest version (Gemini 3 GA may bump this)
+
+  # MCP client (Anthropic-led official SDK)
+  "mcp>=1.0.0",                        # TODO: confirm latest version on build day
+
+  # MongoDB Atlas
+  "pymongo>=4.9.0,<5.0",
+
+  # BigQuery for diagnostic queries against Fivetran-synced data
+  "google-cloud-bigquery>=3.25.0,<4.0",  # TODO: confirm latest version
+
+  # HTTP client used to talk to the Fivetran MCP server over its HTTP transport
+  "httpx>=0.27.0,<1.0",
+
+  # Misc
+  "python-dotenv>=1.0.0,<2.0",
+  "structlog>=24.1.0,<25.0",
+  "tenacity>=9.0.0,<10.0",             # retries for MCP / BigQuery transient errors
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0,<9.0",
+  "pytest-asyncio>=0.24.0,<1.0",
+  "pytest-httpx>=0.32.0,<1.0",        # TODO: confirm latest
+  "ruff>=0.6.0,<1.0",
+  "mypy>=1.11.0,<2.0",
+]
+
+[project.scripts]
+# Local-dev convenience: `dtc-agent` boots the FastAPI service.
+dtc-agent = "agent.main:run"
+
+[project.urls]
+Homepage = "https://github.com/REPLACE-ME/dtc-diagnostic-agent"
+Repository = "https://github.com/REPLACE-ME/dtc-diagnostic-agent"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/agent", "README.md", "pyproject.toml"]
+
+# ---------------------------------------------------------------------------
+# Tooling configuration
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "ASYNC"]
+ignore = ["E501"]  # line length is enforced by formatter, not linter
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

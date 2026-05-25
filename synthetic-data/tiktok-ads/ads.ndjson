@@ -1,0 +1,7 @@
+{"id": "tt_ad_001", "name": "Mint Renewal Serum - Hook A", "created_at": "2026-04-07", "status": "active"}
+{"id": "tt_ad_002", "name": "Mint Renewal Serum - Hook B", "created_at": "2026-04-07", "status": "active"}
+{"id": "tt_ad_003", "name": "Foundation Routine Demo", "created_at": "2026-04-07", "status": "active"}
+{"id": "tt_ad_paused_0", "name": "Q1 Test 0", "created_at": "2026-03-04", "status": "paused"}
+{"id": "tt_ad_paused_1", "name": "Q1 Test 1", "created_at": "2026-03-09", "status": "paused"}
+{"id": "tt_ad_paused_2", "name": "Q1 Test 2", "created_at": "2026-03-14", "status": "paused"}
+{"id": "tt_ad_paused_3", "name": "Q1 Test 3", "created_at": "2026-03-19", "status": "paused"}

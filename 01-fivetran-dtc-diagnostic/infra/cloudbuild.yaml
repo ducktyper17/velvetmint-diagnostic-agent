@@ -1,0 +1,87 @@
+# Cloud Build pipeline for the DTC Diagnostic Agent.
+#
+# Single-shot build -> push -> deploy. Triggered manually with:
+#
+#   gcloud builds submit . \
+#     --config=infra/cloudbuild.yaml \
+#     --substitutions=_SERVICE=dtc-agent,_IMAGE_TAG=$(git rev-parse --short HEAD)
+#
+# Or wired to a GitHub trigger in the Cloud Build console for push-to-main.
+
+substitutions:
+  # Cloud Run service name. Override with `--substitutions=_SERVICE=...`.
+  _SERVICE: "dtc-agent"
+  _REGION: "us-central1"
+  _AR_REPO: "dtc"
+  _IMAGE_TAG: "latest"
+  _AGENT_SA: "dtc-agent-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  dynamicSubstitutions: true
+
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${_IMAGE_TAG}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest"
+
+steps:
+  # ---------------------------------------------------------------------------
+  # 1. Build the agent container image.
+  #    The Dockerfile lives at agent/Dockerfile (added on Day 2 of the build
+  #    plan). Until then this step expects: agent/pyproject.toml +
+  #    agent/src/agent/* + a thin Dockerfile that pip-installs and runs uvicorn.
+  # ---------------------------------------------------------------------------
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${_IMAGE_TAG}
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest
+      - --file=agent/Dockerfile
+      - agent
+
+  # ---------------------------------------------------------------------------
+  # 2. Push to Artifact Registry. (`images:` block at the bottom also pushes,
+  #    but we push explicitly so the deploy step has a stable image to use.)
+  # ---------------------------------------------------------------------------
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}
+    waitFor: [build]
+
+  # ---------------------------------------------------------------------------
+  # 3. Deploy to Cloud Run.
+  #    Secrets are mounted from Secret Manager. The agent SA must have
+  #    roles/secretmanager.secretAccessor on each secret (see infra/README.md).
+  # ---------------------------------------------------------------------------
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${_IMAGE_TAG}
+      - --region=${_REGION}
+      - --platform=managed
+      - --service-account=${_AGENT_SA}
+      - --no-allow-unauthenticated
+      - --port=8080
+      - --memory=1Gi
+      - --cpu=1
+      - --concurrency=20
+      - --timeout=600
+      - --min-instances=0
+      - --max-instances=10
+      - --set-env-vars=ENVIRONMENT=prod,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${_REGION},BIGQUERY_DATASET=fivetran_velvetmint,FIVETRAN_ALLOW_WRITES=true,LOG_LEVEL=INFO
+      - --set-secrets=FIVETRAN_MCP_TOKEN=fivetran-mcp-token:latest,MONGODB_URI=mongodb-uri:latest
+      # The MCP URL is itself a Cloud Run service; we resolve it at deploy time.
+      - --update-env-vars=FIVETRAN_MCP_URL=https://dtc-fivetran-mcp-${PROJECT_NUMBER}.${_REGION}.run.app
+    waitFor: [push]
+
+# Build runs end-to-end in ~3-4 minutes on E2_HIGHCPU_8.
+timeout: 1200s

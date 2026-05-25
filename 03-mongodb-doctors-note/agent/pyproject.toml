@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doctors-note-agent"
+version = "0.0.1"
+description = "Doctor's Note Decoder — explains medical reports in plain language, does not diagnose."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Hackathon team" }]
+
+# Versions below are minimums known to exist as of 2026-05. The intent is
+# to constrain to known-good majors without overpinning the patch level
+# (Cloud Run rebuilds from latest within these ranges). Anything tagged
+# "TODO confirm" should be sanity-checked against PyPI right before the
+# first real deploy.
+dependencies = [
+  # Vertex AI / Gemini 3 access. The Vertex AI SDK is `google-cloud-aiplatform`.
+  "google-cloud-aiplatform>=1.71.0",  # TODO confirm latest at deploy time
+
+  # Mongo driver. Used only by seed_data.py for index bootstrap; the
+  # request path goes through the MongoDB MCP server instead.
+  "pymongo>=4.10.0",
+
+  # Voyage AI client. Real package name on PyPI is `voyageai`.
+  # We only call it directly from seed_data.py as a fallback when the
+  # MCP server's auto-embedding path is unavailable.
+  "voyageai>=0.3.0",  # TODO confirm latest at deploy time
+
+  # Official Python MCP client SDK. PyPI package name is `mcp`.
+  # We use it to talk to the MongoDB MCP server over stdio.
+  "mcp>=1.2.0",  # TODO confirm latest at deploy time
+
+  # Web framework + server + validation.
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "pydantic>=2.9.0",
+
+  # Multipart file uploads and PDF byte handling.
+  "python-multipart>=0.0.12",
+
+  # Env file loading for local dev. Cloud Run injects env directly.
+  "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  # Intentionally minimal for the backup scaffold. Tests are a TODO.
+  "ruff>=0.7.0",
+]
+
+[tool.setuptools]
+# Flat layout: modules live directly under agent/. We list them
+# explicitly so the build does not pick up scratch files.
+py-modules = [
+  "main",
+  "extractor",
+  "retriever",
+  "responder",
+  "prompts",
+  "seed_data",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
