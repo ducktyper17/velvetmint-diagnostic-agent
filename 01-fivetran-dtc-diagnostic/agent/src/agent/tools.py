@@ -1,9 +1,8 @@
 """Typed Python wrappers around the Fivetran MCP server's tool surface.
 
-The Fivetran MCP server (https://github.com/fivetran/fivetran-mcp) exposes 161
-tools over either stdio or HTTP transports. We use the HTTP transport so the
-MCP can run as a separate Cloud Run service and we can authenticate
-service-to-service via a bearer token + Cloud Run IAM.
+The official Fivetran MCP server is currently stdio-first. For local
+development we spawn it as a subprocess and keep one MCP session open for the
+life of the app process.
 
 This module exposes a small, opinionated subset of those tools as plain
 Python coroutines:
@@ -18,19 +17,21 @@ Python coroutines:
 Each function returns a Pydantic model so the agent loop can serialize the
 result into a tool_result message without ad-hoc dict munging.
 
-The actual MCP HTTP call is stubbed with TODOs — the protocol-level details
-(JSON-RPC envelope, SSE streaming for long-running calls) need to be confirmed
-against the live MCP server on Day 3 of the build plan.
+The long-term production shape can still move to a dedicated MCP service, but
+the local build path should use the official server unmodified so we validate
+real tool names and response shapes early.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any, Literal
 
-import httpx
+from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from pydantic import BaseModel, Field
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from agent.config import Settings
 
@@ -112,62 +113,92 @@ class QueryResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# MCP HTTP client
+# MCP stdio client
 # ---------------------------------------------------------------------------
 
 
 class FivetranMCPClient:
-    """Thin async HTTP client for the Fivetran MCP server.
-
-    The MCP protocol uses JSON-RPC 2.0 over HTTP for tool invocations. Each
-    call is `POST /mcp` with `{"jsonrpc": "2.0", "method": "tools/call",
-    "params": {"name": ..., "arguments": ...}, "id": ...}`. The server returns
-    the tool's output in `result.content`.
-
-    We keep one persistent :class:`httpx.AsyncClient` per agent process for
-    HTTP/2 connection reuse.
-    """
+    """Async stdio client for the official Fivetran MCP server."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._client = httpx.AsyncClient(
-            base_url=str(settings.fivetran_mcp_url),
-            headers={
-                "Authorization": f"Bearer {settings.fivetran_mcp_token.get_secret_value()}",
-                "Content-Type": "application/json",
+        self._stdio_cm = None
+        self._session: ClientSession | None = None
+        self._session_entered = False
+
+    async def initialize(self) -> None:
+        """Start the stdio MCP subprocess and initialize a session."""
+        if self._session is not None:
+            return
+
+        server_path = self._resolve_server_path()
+        server_params = StdioServerParameters(
+            command="python",
+            args=[server_path],
+            env={
+                "FIVETRAN_API_KEY": self._required_secret(
+                    self._settings.fivetran_api_key,
+                    "FIVETRAN_API_KEY",
+                ),
+                "FIVETRAN_API_SECRET": self._required_secret(
+                    self._settings.fivetran_api_secret,
+                    "FIVETRAN_API_SECRET",
+                ),
+                "FIVETRAN_ALLOW_WRITES": str(self._settings.fivetran_allow_writes).lower(),
             },
-            timeout=httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0),
         )
+        self._stdio_cm = stdio_client(server_params)
+        read_stream, write_stream = await self._stdio_cm.__aenter__()
+        self._session = ClientSession(read_stream, write_stream)
+        await self._session.__aenter__()
+        self._session_entered = True
+        await self._session.initialize()
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._session is not None and self._session_entered:
+            await self._session.__aexit__(None, None, None)
+            self._session_entered = False
+        if self._stdio_cm is not None:
+            await self._stdio_cm.__aexit__(None, None, None)
+        self._session = None
+        self._stdio_cm = None
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=8),
-        reraise=True,
-    )
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Invoke an MCP tool by name. Returns the parsed `result.content`.
+        """Invoke an MCP tool by name and parse the JSON text response."""
+        await self.initialize()
+        if self._session is None:
+            raise RuntimeError("Fivetran MCP session failed to initialize")
 
-        Raises :class:`httpx.HTTPStatusError` for non-2xx, and
-        :class:`RuntimeError` for JSON-RPC error responses.
-        """
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-            "id": 1,  # caller does not use IDs; we serialize calls
-        }
-        # TODO: confirm exact endpoint path and SSE behavior. The Fivetran MCP
-        # may publish a non-standard URL (e.g. "/" or "/rpc"); we'll lock this
-        # in on Day 3 when we run it locally.
-        resp = await self._client.post("/", json=payload)
-        resp.raise_for_status()
-        body = resp.json()
-        if "error" in body:
-            raise RuntimeError(f"MCP error calling {name!r}: {body['error']}")
-        return body.get("result", {})
+        result = await self._session.call_tool(name, _tool_arguments(name=name, arguments=arguments))
+        if getattr(result, "isError", False):
+            raise RuntimeError(f"MCP error calling {name!r}: {result.content}")
+
+        text_chunks = [
+            part.text
+            for part in result.content
+            if hasattr(part, "text") and isinstance(part.text, str)
+        ]
+        if not text_chunks:
+            return {}
+        body_text = "\n".join(text_chunks)
+        try:
+            return json.loads(body_text)
+        except json.JSONDecodeError:
+            return {"content": body_text}
+
+    def _resolve_server_path(self) -> str:
+        """Resolve the local path to the official Fivetran MCP server."""
+        if self._settings.fivetran_mcp_server_path:
+            return self._settings.fivetran_mcp_server_path
+        default_path = Path(__file__).resolve().parents[3] / "fivetran-mcp" / "server.py"
+        return str(default_path)
+
+    @staticmethod
+    def _required_secret(value, env_name: str) -> str:
+        """Fail fast if a required local MCP secret is missing."""
+        if value is None:
+            raise RuntimeError(f"{env_name} is required for the local Fivetran MCP session")
+        return value.get_secret_value()
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +221,7 @@ async def setup_connector(
     no-op. Otherwise calls ``create_connection`` (write mode required).
 
     Args:
-        client: live MCP HTTP client.
+        client: live MCP client.
         source: one of the curated :data:`Source` values.
         destination_id: Fivetran destination id (BigQuery target).
         group_id: Fivetran group id the connection should belong to.
@@ -219,9 +250,9 @@ async def setup_connector(
         {
             "service": service,
             "group_id": group_id,
-            "destination_id": destination_id,
             "run_setup_tests": True,
             "paused": False,
+            "destination_schema_names": "FIVETRAN_NAMING",
             "config": {},
         },
     )
@@ -239,10 +270,11 @@ async def trigger_sync(
     connection_id: str,
 ) -> SyncResult:
     """Kick off a sync on an existing connection."""
-    result = await client.call_tool("sync_connection", {"connection_id": connection_id})
+    result = await client.call_tool("sync_connection", {"connection_id": connection_id, "force": False})
+    raw = result.get("data", result)
     return SyncResult(
         connection_id=connection_id,
-        sync_id=result.get("sync_id"),
+        sync_id=raw.get("sync_id"),
         queued=True,
     )
 
@@ -256,7 +288,8 @@ async def check_sync_status(
         "get_connection_state",
         {"connection_id": connection_id},
     )
-    raw_state = state.get("status", "pending")
+    raw = state.get("data", state)
+    raw_state = raw.get("sync_state") or raw.get("status") or "pending"
     # Map Fivetran's status vocabulary onto our four-state enum.
     normalized: Literal["pending", "syncing", "complete", "failed"]
     if raw_state in {"syncing", "running", "in_progress"}:
@@ -270,9 +303,9 @@ async def check_sync_status(
     return SyncStatus(
         connection_id=connection_id,
         state=normalized,
-        last_sync_at=state.get("last_sync_at"),
-        rows_synced=state.get("rows_synced"),
-        error=state.get("error"),
+        last_sync_at=raw.get("last_sync_at"),
+        rows_synced=raw.get("rows_synced"),
+        error=raw.get("error"),
     )
 
 
@@ -307,8 +340,9 @@ def _iter_connections(list_connections_result: dict[str, Any]) -> list[dict[str,
     "text": "..." } ] }` for some tools and returns structured payloads for
     others. We tolerate both.
     """
-    # TODO: confirm the actual shape on Day 3. Until then, we accept the
-    # most likely structures.
+    data = list_connections_result.get("data", list_connections_result)
+    if "items" in data:
+        return list(data["items"])
     if "items" in list_connections_result:
         return list(list_connections_result["items"])
     if "connections" in list_connections_result:
@@ -321,7 +355,9 @@ def _iter_connections(list_connections_result: dict[str, Any]) -> list[dict[str,
 
 def _extract_connection_id(create_connection_result: dict[str, Any]) -> str:
     """Pull the new connection id out of a `create_connection` response."""
-    # TODO: confirm exact field names against live MCP responses on Day 3.
+    data = create_connection_result.get("data", create_connection_result)
+    if "id" in data:
+        return str(data["id"])
     if "id" in create_connection_result:
         return str(create_connection_result["id"])
     if "connection_id" in create_connection_result:
@@ -330,3 +366,33 @@ def _extract_connection_id(create_connection_result: dict[str, Any]) -> str:
         "create_connection did not return an id; "
         f"got keys={list(create_connection_result)!r}"
     )
+
+
+def _tool_arguments(*, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Map simplified wrapper arguments onto the official MCP tool contract."""
+    schema_files = {
+        "list_connections": "open-api-definitions/connections/list_connections.json",
+        "create_connection": "open-api-definitions/connections/create_connection.json",
+        "get_connection_state": "open-api-definitions/connections/connection_state.json",
+        "sync_connection": "open-api-definitions/connections/sync_connection.json",
+    }
+    schema_file = schema_files.get(name)
+    if schema_file is None:
+        raise ValueError(f"Unsupported MCP tool {name!r}")
+
+    if name == "list_connections":
+        return {"schema_file": schema_file}
+    if name == "create_connection":
+        return {"schema_file": schema_file, "request_body": arguments}
+    if name == "get_connection_state":
+        return {
+            "schema_file": schema_file,
+            "connection_id": arguments["connection_id"],
+        }
+    if name == "sync_connection":
+        return {
+            "schema_file": schema_file,
+            "connection_id": arguments["connection_id"],
+            "request_body": {"force": bool(arguments.get("force", False))},
+        }
+    raise ValueError(f"Unsupported MCP tool {name!r}")

@@ -13,17 +13,20 @@ calls, and the final report from a single ``EventSource``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from pymongo import MongoClient
 from sse_starlette.sse import EventSourceResponse
 
 from agent.agent_loop import AgentEvent, AgentRequest, run_agent_loop
@@ -48,20 +51,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     settings = get_settings()
     mcp = FivetranMCPClient(settings)
+    mongo = MongoClient(settings.mongodb_uri.get_secret_value())
+    await mcp.initialize()
     app.state.mcp = mcp
+    app.state.mongo = mongo
     app.state.settings = settings
 
-    # TODO: open a MongoDB connection here. We use motor (async pymongo) once
-    # the diagnosis-persistence work lands on Day 5.
-    #     from motor.motor_asyncio import AsyncIOMotorClient
-    #     app.state.mongo = AsyncIOMotorClient(settings.mongodb_uri.get_secret_value())
+    await asyncio.to_thread(mongo.admin.command, "ping")
 
     log.info("agent.startup_complete", extra={"environment": settings.environment})
     try:
         yield
     finally:
         await mcp.aclose()
-        # TODO: close mongo client when wired.
+        await asyncio.to_thread(mongo.close)
 
 
 app = FastAPI(
@@ -127,6 +130,7 @@ async def diagnose(
     """
     conversation_id = body.conversation_id or str(uuid.uuid4())
     mcp: FivetranMCPClient = request.app.state.mcp
+    mongo: MongoClient = request.app.state.mongo
 
     agent_req = AgentRequest(
         question=body.question,
@@ -144,18 +148,26 @@ async def diagnose(
 
     async def event_publisher() -> AsyncIterator[dict[str, Any]]:
         """Translate :class:`AgentEvent` -> SSE-Starlette event dicts."""
+        await _persist_diagnosis_start(
+            mongo=mongo,
+            settings=settings,
+            diagnosis_id=conversation_id,
+            body=body,
+        )
         # Send the conversation id up front so the client can subscribe to
         # `/diagnoses/{id}` later for replay.
-        yield _sse_event(
-            AgentEvent(
-                type="thought",
-                payload={"text": "Starting diagnosis...", "conversation_id": conversation_id},
-                iteration=0,
-            )
+        start_event = AgentEvent(
+            type="thought",
+            payload={"text": "Starting diagnosis...", "conversation_id": conversation_id},
+            iteration=0,
         )
-
-        # TODO: write the user message + initial conversation row to MongoDB
-        # before kicking off the loop. Right now we keep state in process.
+        await _persist_event(
+            mongo=mongo,
+            settings=settings,
+            diagnosis_id=conversation_id,
+            event=start_event,
+        )
+        yield _sse_event(start_event)
 
         try:
             async for ev in run_agent_loop(
@@ -163,18 +175,27 @@ async def diagnose(
                 settings=settings,
                 mcp=mcp,
             ):
-                # TODO: persist each event in MongoDB so the diagnosis is
-                # replayable from `/diagnoses/{id}`.
+                await _persist_event(
+                    mongo=mongo,
+                    settings=settings,
+                    diagnosis_id=conversation_id,
+                    event=ev,
+                )
                 yield _sse_event(ev)
         except Exception as exc:
             log.exception("agent.loop_crashed")
-            yield _sse_event(
-                AgentEvent(
-                    type="error",
-                    payload={"error": f"agent crashed: {exc}"},
-                    iteration=-1,
-                )
+            crash_event = AgentEvent(
+                type="error",
+                payload={"error": f"agent crashed: {exc}"},
+                iteration=-1,
             )
+            await _persist_event(
+                mongo=mongo,
+                settings=settings,
+                diagnosis_id=conversation_id,
+                event=crash_event,
+            )
+            yield _sse_event(crash_event)
 
     return EventSourceResponse(
         event_publisher(),
@@ -187,21 +208,23 @@ async def diagnose(
 
 
 @app.get("/diagnoses/{diagnosis_id}")
-async def get_diagnosis(diagnosis_id: str) -> JSONResponse:
-    """Return a previously-stored diagnosis by id.
-
-    TODO: read from MongoDB once persistence is wired (Day 5 of build plan).
-    """
+async def get_diagnosis(
+    diagnosis_id: str,
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> JSONResponse:
+    """Return a previously-stored diagnosis by id."""
     if not diagnosis_id:
         raise HTTPException(status_code=400, detail="missing diagnosis_id")
-    return JSONResponse(
-        status_code=501,
-        content={
-            "error": "not_implemented",
-            "detail": "MongoDB persistence is wired on Day 5 of the build plan.",
-            "diagnosis_id": diagnosis_id,
-        },
+    mongo: MongoClient = request.app.state.mongo
+    diagnosis = await asyncio.to_thread(
+        _diagnoses_collection(mongo, settings).find_one,
+        {"_id": diagnosis_id},
+        {"_id": 0},
     )
+    if diagnosis is None:
+        raise HTTPException(status_code=404, detail="diagnosis not found")
+    return JSONResponse(status_code=200, content=diagnosis)
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +248,84 @@ def _sse_event(ev: AgentEvent) -> dict[str, Any]:
             }
         ),
     }
+
+
+def _diagnoses_collection(mongo: MongoClient, settings: Settings):
+    """Return the Mongo collection used for persisted diagnoses."""
+    return mongo[settings.mongodb_db]["diagnoses"]
+
+
+def _utc_now() -> str:
+    """ISO-8601 timestamp helper for persisted rows."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _persist_diagnosis_start(
+    *,
+    mongo: MongoClient,
+    settings: Settings,
+    diagnosis_id: str,
+    body: DiagnoseRequest,
+) -> None:
+    """Create or replace the diagnosis header row before streaming begins."""
+    doc = {
+        "_id": diagnosis_id,
+        "diagnosis_id": diagnosis_id,
+        "brand_id": body.brand_id,
+        "question": body.question,
+        "status": "running",
+        "events": [],
+        "created_at": _utc_now(),
+        "updated_at": _utc_now(),
+        "final_report": None,
+    }
+    await asyncio.to_thread(
+        _diagnoses_collection(mongo, settings).replace_one,
+        {"_id": diagnosis_id},
+        doc,
+        True,
+    )
+
+
+async def _persist_event(
+    *,
+    mongo: MongoClient,
+    settings: Settings,
+    diagnosis_id: str,
+    event: AgentEvent,
+) -> None:
+    """Append one streamed event to the persisted diagnosis document."""
+    event_payload = {
+        "type": event.type,
+        "iteration": event.iteration,
+        "ts_ms": event.ts_ms,
+        **event.payload,
+    }
+    update: dict[str, Any] = {
+        "$push": {"events": event_payload},
+        "$set": {
+            "updated_at": _utc_now(),
+            "status": _status_for_event(event),
+        },
+    }
+    if event.type == "final_report":
+        update["$set"]["final_report"] = event.payload
+    await asyncio.to_thread(
+        _diagnoses_collection(mongo, settings).update_one,
+        {"_id": diagnosis_id},
+        update,
+    )
+
+
+def _status_for_event(event: AgentEvent) -> str:
+    """Map an agent event to a persisted diagnosis lifecycle state."""
+    if event.type == "final_report":
+        return "completed"
+    if event.type == "done":
+        return "completed"
+    if event.type == "error":
+        return "failed"
+    return "running"
 
 
 # ---------------------------------------------------------------------------

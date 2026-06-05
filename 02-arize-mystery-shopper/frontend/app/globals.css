@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body { background: #0a0a0f; color: #e6e6f0; }
+
+/* Subtle scanline noise on the live thinking panel */
+.thinking-panel::before {
+  content: "";
+  position: absolute; inset: 0;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255,255,255,0.012) 0 1px,
+      transparent 1px 3px
+    );
+  pointer-events: none;
+}
+
+.glow {
+  text-shadow: 0 0 16px rgba(167, 139, 250, 0.45);
+}

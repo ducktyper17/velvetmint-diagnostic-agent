@@ -1,71 +1,198 @@
-# DECISION — Why we're building the Fivetran DTC Brand Health Diagnostic
+# DECISION — Why the MongoDB path is active now
+
+## The judging rubric
+
+Per [the hackathon page](https://rapid-agent.devpost.com/), the score is driven by:
+
+1. **Technological Implementation**
+2. **Design**
+3. **Potential Impact**
+4. **Quality of the Idea**
+
+The fourth criterion is still the one most teams will underweight. We do not
+just need a working agent; we need one whose partner integration feels
+essential and memorable in under 3 minutes.
+
+## Updated ranking — execution reality included
+
+| Rank | Idea | Track | Grade | Comment |
+|---|---|---|---|---|
+| **1** | **Doctor's Note Decoder** | **MongoDB** | **A** | Best balance of strong emotional demo, obvious Atlas fit, and realistic build speed from where the repo is today. |
+| 2 | DTC Brand Health Diagnostic | Fivetran | A | Great concept, but heavier partner, trial, and sandbox risk with more moving parts to stabilize quickly. |
+| 3 | Voice-AI Mystery Shopper | Arize | A | High novelty, but weaker instant emotional hook than the MongoDB path. |
+| 4 | Apartment Hunting Detective | Elastic | A | Strong user value, but data-ingest work still dominates the schedule. |
+| 5 | Engineering Onboarding Agent | GitLab | A- | Solid product idea, crowded track. |
+| 6 | Production AI Cost Forecaster | Dynatrace | A | Interesting, but the story is less immediate for judges. |
+
+## Why MongoDB wins from here
+
+### 1. Atlas is genuinely load-bearing
+
+The core user-facing magic is a MongoDB problem:
+
+- one Atlas knowledge base
+- multiple collection shapes
+- one aggregation pipeline with vector search plus structured filters
+- saved user history in the same database
+
+That is far stronger than "we used MongoDB somewhere in the stack."
+
+### 2. The demo is immediate
+
+Judges do not need domain setup to understand it:
+
+- confusing report goes in
+- structured retrieval happens live
+- plain-language explanation comes out
+
+That before/after is crisp, emotional, and easy to score quickly.
+
+### 3. It is a better execution bet right now
+
+Compared with the Fivetran concept, this path removes:
+
+- trial-expiry pressure
+- multi-SaaS sandbox setup
+- connector provisioning uncertainty
+- a large dashboard and pipeline surface area before the core agent works
+
+The MongoDB project still has real work, but it is concentrated in a smaller
+set of components.
+
+### 4. The official hackathon resources map cleanly onto it
+
+- **Agent Builder / Agent Runtime** for orchestration
+- **MongoDB MCP server** for the partner action layer
+- **Cloud Run** for the hosted backend
+- **Secret Manager** for secrets
+- **Gemini safety settings** for guardrails
+
+That gives us a submission that looks intentional rather than stitched together.
+
+## Non-negotiables for rules compliance
+
+Per the [rules](https://rapid-agent.devpost.com/rules), we cannot use outside AI
+providers. That means:
+
+- no OpenAI
+- no Anthropic
+- no Cohere
+- no Voyage AI embeddings
+
+The MongoDB path therefore uses **Gemini + Vertex AI text embeddings** on the
+Google side, and **MongoDB Atlas + the official MongoDB MCP server** on the
+partner side.
+
+## Guardrails for the MongoDB path
+
+We only pursue this path if all three remain true:
+
+- [ ] The agent never presents itself as diagnosing the patient.
+- [ ] The demo stays scoped to report explanation, cited context, and follow-up questions.
+- [ ] The Atlas retrieval step is visible enough in the video that judges can see why MongoDB matters.
+
+If the legal framing starts to wobble, we narrow scope further to radiology
+report explanation only instead of broad "medical report understanding."
+
+## What we are not doing
+
+- We are not forcing MongoDB into the Fivetran story as side storage.
+- We are not using third-party embeddings that could violate the rules.
+- We are not expanding to a full patient portal product for the hackathon.
+- We are not broadening beyond the narrowest demoable slice before the core loop works.
+
+## Secondary option
+
+If the MongoDB demo becomes unsafe or unstable, the fallback is still
+`01-fivetran-dtc-diagnostic/`. It remains a strong idea, just not the fastest
+path to a polished, rules-safe submission from today's position.
+# DECISION — Why we're building the Arize Self-Improving QA Agent
+
+> **Updated May 26, 2026.** Switched primary submission from Fivetran DTC Diagnostic to **Arize Self-Improving QA Agent** after re-reading the [Arize partner page](https://rapid-agent.devpost.com/details/arize-resources). The partner explicitly stated the winning criteria and our Fivetran plan doesn't hit them; our Arize scaffold can. The Fivetran scaffold is preserved as a stretch second submission (rules allow it). See the "What changed" section at the bottom for the full rationale.
 
 ## The four-criterion judging rubric
 
 Per [the hackathon page](https://rapid-agent.devpost.com/):
 
-1. **Technological Implementation** — does the GCP + partner integration demonstrate quality engineering?
-2. **Design** — is the user experience and design well thought out?
+1. **Technological Implementation** — does the GCP + partner integration demonstrate quality engineering? **(tiebreaker first)**
+2. **Design** — is the user experience well thought out?
 3. **Potential Impact** — how big of an impact on the target community?
 4. **Quality of the Idea** — how creative and unique?
 
-The criterion most teams underweight is **#4 (Quality of the Idea)**. That's where we'll win or lose.
+Tiebreaker order is Tech → Design → Impact → Idea (per `00-shared/hackathon-rules.md` §8). That puts disproportionate weight on engineering depth.
 
-## Full ranking — judge hat on
+## The Arize partner's own stated criteria (verbatim)
+
+From [arize-resources](https://rapid-agent.devpost.com/details/arize-resources):
+
+> "We'll evaluate submissions based on technical implementation, **meaningful use of tracing and MCP**, **quality of the agent's self-improvement loop**, and overall impact... **Bonus points for agents that use their own observability data to improve over time.**"
+
+This is the most explicit signal any partner gave us about how they will score the track. Whoever builds the strongest *self-improvement loop* on top of Phoenix wins.
+
+## Full ranking — judge hat on (post-update)
 
 | Rank | Idea | Track | Grade | Track competition (est.) | Comment |
 |---|---|---|---|---|---|
-| **1** | **DTC Brand Health Diagnostic** | **Fivetran** | **A** | Low (≈100–150) | Top pick. Fivetran's superpower is genuinely load-bearing. |
-| 2 | Voice-AI Mystery Shopper | Arize | A | Low (≈100–200) | Highest novelty. Slower demo. Solid backup. |
-| 3 | Doctor's Note Decoder | MongoDB | A | Medium (≈300–500) | Hybrid retrieval perfectly fits Atlas. Health liability framing risk. |
-| 4 | Apartment Hunting Detective | Elastic | A | Medium (≈200–400) | Universal pain. Heavy data-ingest work. |
-| 5 | Engineering Onboarding Agent | GitLab | A− | High (≈500+) | Crowded track is the real obstacle, not the idea. |
+| **1** | **Self-Improving QA Agent** | **Arize** | **A+** | Low (≈100–200) | Promoted. Hits Arize's stated bonus criterion directly. No trial-expiry risk. |
+| 2 | DTC Brand Health Diagnostic | Fivetran | A | Low (≈100–150) | Demoted to backup / stretch second submission. Trial-expiry risk; demo-mode disclosure overhead. |
+| 3 | Doctor's Note Decoder | MongoDB | A | Medium (≈300–500) | Atlas fits hybrid retrieval. Medical liability framing risk. |
+| 4 | Apartment Hunting Detective | Elastic | A | Medium (≈200–400) | Heavy data-ingest work. |
+| 5 | Engineering Onboarding Agent | GitLab | A− | High (≈500+) | Crowded track is the real obstacle. |
 | 6 | Production AI Cost Forecaster | Dynatrace | A | Low–medium | Forecasting+changepoints used in fresh way. |
 
-(Estimated competition based on partner brand awareness among hackathon participants and pre-existing community size; not from the closed gallery.)
+## Why Arize Self-Improving QA Agent wins
 
-## Why Fivetran DTC Diagnostic wins
+### 1. Tech Implementation — A+ (this is the tiebreaker)
 
-### 1. Quality of Idea — A
-Multi-source root-cause analysis is genuinely impossible without unified data. The agent autonomously sets up data pipelines and reasons across them. No shipped product does the full "diagnose my DTC brand across 6 platforms in 90 seconds" loop in 2026. Existing "DTC analytics" tools (Daasity, Polar Analytics, Triple Whale) are dashboards, not agents — humans still do the reasoning.
+The Phoenix MCP server is genuinely load-bearing in **both directions**:
 
-### 2. Tech Implementation — A
-The Fivetran MCP is used at the **write-mode connector-creation level** (`create_connection`, `sync_connection`, `get_connection_state`, `modify_connection_schema_config`). This is exactly what the hackathon brief asks for: *"agent should plan steps and use tools to finish the job."* Most Fivetran submissions will use read-only tools; we'll use write mode. That's the differentiator.
+- **Read side**: agent calls `list-traces`, `get-spans`, `list-experiments-for-dataset`, `get-experiment-by-id` at runtime to read its OWN failure spans — this is the literal definition of "introspect at runtime" from the partner page.
+- **Write side**: agent calls `upsert-prompt`, `add-dataset-examples`, and writes experiment rows to mutate the eval methodology and grow the test suite without a code deploy.
+
+That's the equivalent of "write-mode connector creation" but for evals — same engineering-depth play that made the original Fivetran pick strong. Stack: Google ADK (`Agent` + `FunctionTool` + `McpToolset`) + `openinference-instrumentation-google-adk` + `phoenix.otel.register(auto_instrument=True)` + Cloud Run. Canonical, matches the [Arize gemini-hackathon reference repo](https://github.com/Arize-ai/gemini-hackathon).
+
+### 2. Quality of Idea — A+
+
+No shipped product does "agent that audits another Gemini agent, finds failure clusters, rewrites the SUT's system prompt, re-runs the eval, and proves a score delta — all with Phoenix as the system of record" in 2026. The closest analogs (Patronus, Braintrust, Promptfoo, Humanloop) are human-driven dashboards. We make the agent the QA engineer.
 
 ### 3. Design — A
-Conversational SMB-facing agent (text or voice). Streaming reasoning visible in a clean Next.js dashboard. The diagnosis output is structured (problem → root cause → revenue impact → fix recommendation) — easy to read in a 3-minute demo.
+
+ADK streams `events()` we render as a live "thinking" panel. Phoenix UI is embedded in a side panel so reviewers can click into any session, prompt version, or experiment row themselves. Final report is a versioned diff: "system prompt v1 → v2", "hallucination 23% → 6%", side-by-side judge rationales on a representative failing scenario.
 
 ### 4. Impact — A
-The DTC market is ~$300B globally. Every brand owner has had this exact panic moment. The target user (DTC founder/operator) is sympathetic and the dollar amounts in the demo are concrete.
 
-## When to pivot (decision gate: Day 4 / May 27)
+Every team shipping a Gemini agent (millions of teams by 2026) has this exact pain. "Eval as code gate" is a real CI/CD product wedge. The demo's claim — "an AI quality engineer that never sleeps" — is one any AI product leader has fantasized about.
 
-We pivot to a backup IF any of these are true on Day 4:
+## Why we deprioritized the Fivetran build (preserving it as backup)
 
-- [ ] **GCP Agent Builder access blocked.** (Fallback: use Vertex AI directly — same model, more work.)
-- [ ] **Fivetran free trial is restrictive enough to break the demo.** (Fallback: pivot to Arize Mystery Shopper which has no partner-data dependency.)
-- [ ] **Can't get 3+ partner SaaS sandboxes working.** (Fallback: pivot to MongoDB Doctor's Note which only needs Atlas + Voyage.)
+- **Trial expiry**: 14-day Fivetran trial expires ~June 7, before the June 22 judging window. We had a "demo mode replay" plan in `00-shared/trial-expiry-risk.md` but it added complexity and risked judges scoring us as "not actually live" in Stage 1 completeness.
+- **No partner-stated winning criterion**: Fivetran told us about tools, not about how they would score. Arize told us exactly.
+- **Crowding parity**: both tracks are low-competition (~100–200 estimated), so we don't gain meaningful crowd-cover by sticking with Fivetran.
+- **Reuses existing assets**: the `synthetic-data/` DTC corpus we already built is reused as the SUT's context (the SUT is a customer-support agent for the fake brand). Zero waste.
 
-## Why we are NOT building each alternative (the case for committing)
+The Fivetran scaffold and the synthetic-data work stay in the repo. **If we hit our Arize deadlines comfortably by Day 14 (June 6)**, we ship the Fivetran scaffold as a second submission (rules Section 7 allows it; single submission can win one prize but two submissions = two shots at the pool).
 
-- **Mystery Shopper (Arize)**: Slower demo. Score reports are less viscerally dramatic than "agent fixed my business." A− potential ceiling.
-- **Doctor's Note (MongoDB)**: Medical liability requires careful framing in 19 days. Also MongoDB track is more crowded.
-- **Apartment Detective (Elastic)**: Data ingestion (HPD violations, Reddit, Yelp, etc.) is the bulk of the work. Less time on the agent itself.
-- **Onboarding (GitLab)**: Most crowded track. Even an excellent submission may be top-15 not top-3.
-- **AI Cost Forecaster (Dynatrace)**: Simulating LLM cost telemetry into Dynatrace is tedious. Strong idea, harder build.
+## When to pivot again (decision gate: Day 4 / May 30)
 
-## What changes our mind
+We pivot only if any of these break on Day 4:
 
-A single A+ insight nobody's mentioned — bring it. The Devpost gallery isn't public yet, so we won't know what's been submitted until after we submit. We bet on the strongest hand we can play.
+- [ ] **Phoenix Cloud account / API key blocked.** (Fallback: self-hosted Phoenix in Docker — supported officially, no functional loss.)
+- [ ] **ADK + Phoenix MCP integration spike fails.** (Fallback: drop ADK and use Vertex AI SDK directly with `openinference-instrumentation-vertexai` — same Phoenix tracing, less elegant tool surface.)
+- [ ] **Cannot make Gemini 2.5 reliably mutate its own prompt with measurable improvement.** (Fallback: scope down — present the analysis without the prompt-rewrite step. Still hits the "uses its own observability data" criterion, just less dramatic.)
 
-## Stretch: a second submission for a second prize pool
+## Critical constraint we just learned (Section 7.B)
 
-The [official rules](https://rapid-agent.devpost.com/rules) (Section 7, "Multiple Submissions") allow an entrant to submit multiple substantially different projects. A single submission can win only one prize, but two submissions to two different tracks = two independent shots at the prize pool.
+Per the [rules](https://rapid-agent.devpost.com/rules): *"All other artificial intelligence tools are not permitted."* Means we cannot call Anthropic, OpenAI, or any non-Google AI from our agent. Specifically for Arize: the LLM-as-judge MUST be Gemini, not GPT-4 (Phoenix defaults to OpenAI in some examples — we override). The SUT must also be Gemini. Captured in `00-shared/hackathon-rules.md`.
 
-**Gate**: if by **Day 14 (June 6)** our Fivetran submission is complete and the recorded traces (see `00-shared/trial-expiry-risk.md`) are in place, we have 5 spare days. We use them to ship a stripped-down Arize Mystery Shopper as a second submission. Not a polished demo, but enough to clear Stage 1 (pass/fail viability) and get a real Stage 2 score on the Arize track.
+## What changed (May 26 update changelog)
 
-If the Fivetran build is still wobbling on Day 14, we skip the second submission and finish polishing the primary. We don't sacrifice the strong submission for a weaker second one.
-
-## Critical constraint we just learned
-
-Per the [rules (Section 7.B)](https://rapid-agent.devpost.com/rules): *"All other artificial intelligence tools are not permitted"* — meaning we cannot call Anthropic, OpenAI, Cohere, or any non-Google AI from our agent. Only Gemini and partner-built-in AI features. This is fine for Fivetran (we only need Gemini). It matters for the Arize backup (LLM-as-judge must be Gemini, not GPT-4) and is captured in `00-shared/hackathon-rules.md`.
+| Item | Before | After |
+|---|---|---|
+| Primary track | Fivetran | **Arize** |
+| Arize concept | "Voice-AI Mystery Shopper" — audit competitor AIs | **"Self-Improving QA Agent"** — audit a reference Gemini agent and rewrite its prompts to fix regressions |
+| Phoenix MCP role | Python `mcp` client; control plane only | **`McpToolset` inside ADK** — agent uses MCP as runtime tools; read+write |
+| Agent runtime | FastAPI + `google-cloud-aiplatform` SDK | **Google ADK** (`Agent` + `FunctionTool` + `McpToolset`) |
+| Tracing | manual OTel TODO | `openinference-instrumentation-google-adk` + `phoenix.otel.register(auto_instrument=True)` (auto-instrumented) |
+| Subject under test | live competitor chatbots (TOS + rate-limit risk) | a deliberately-flawed Gemini support agent we control (no risk, deterministic demo) |
+| Trial expiry | demo-mode replay needed (June 7 cliff) | none — Phoenix Cloud free tier is permanent |
+| Fivetran scaffold | primary submission | preserved as backup + optional stretch second submission |

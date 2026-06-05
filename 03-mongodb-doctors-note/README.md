@@ -12,9 +12,9 @@
 
 **Hackathon:** [Google Cloud Rapid Agent Hackathon](https://rapid-agent.devpost.com/)
 **Submission track:** MongoDB Atlas
-**Status:** Backup submission. The primary submission is the Fivetran DTC
-Diagnostic in `../01-fivetran-dtc-diagnostic/`. This project exists in case
-we hit a Day-4 pivot gate (see `../DECISION.md`).
+**Status:** Active MongoDB build path. This is the clearest route if we are
+committing to the MongoDB track and want the partner integration to be
+obviously load-bearing.
 **Deadline:** June 11, 2026 (2:00 PM PDT)
 **License:** Apache-2.0 (added at the workspace root before submission)
 
@@ -43,6 +43,11 @@ What patients actually need is (a) a plain-language translation, (b) the
 statistical context for their specific finding, and (c) better questions
 to ask their doctor. None of that requires a diagnosis.
 
+For the hackathon demo, we deliberately scope v1 to **radiology and imaging
+reports first**. That keeps the retrieval domain narrow, makes the Atlas
+collections easier to curate, and keeps the safety framing much tighter than a
+"general medical copilot."
+
 ## The user
 
 **Priya, 41**, just got her thyroid ultrasound report through MyChart.
@@ -61,13 +66,16 @@ diagnosis by an AI. She wants to walk into the appointment informed.
    `size_cm=2.1`, `features=[mixed echogenicity, no microcalcifications]`,
    `recommendation=follow-up US in 12mo`).
 3. **Runs hybrid retrieval** against a MongoDB Atlas knowledge base:
-   - Vector search (Voyage AI embeddings, `$vectorSearch` aggregation)
-     over PubMed abstracts and clinical guidelines for the relevant
-     condition.
-   - Vector search over de-identified patient-forum excerpts to capture
-     what the experience and decision-making typically look like.
-   - Structured filters for condition type, severity tier, and source
+   - Atlas Vector Search (`$vectorSearch`) over PubMed abstracts and clinical
+     guideline excerpts relevant to the extracted finding.
+   - Atlas search over de-identified patient-experience snippets so the output
+     can explain what follow-up typically feels like without pretending to be a
+     diagnosis engine.
+   - Structured filters for condition type, severity tier, source type, and
      recency, applied in the same aggregation pipeline.
+   - Query and document embeddings generated with **Google Cloud Vertex AI
+     text embeddings**, which keeps the project compliant with the hackathon's
+     Google-only AI rule.
 4. **Produces a structured explanation** (Pydantic-validated JSON):
    - Plain-language translation of what the report says
    - Statistical context for this specific finding (e.g. "TIRADS 3
@@ -75,43 +83,62 @@ diagnosis by an AI. She wants to walk into the appointment informed.
    - Three specific follow-up questions to ask the doctor
    - Whether a follow-up appointment is likely, and on what timeline
    - A non-negotiable disclaimer block (see `LEGAL-DISCLAIMER.md`)
-5. **Optionally saves** the explanation to the patient's private
-   MongoDB collection so future reports can be cross-referenced.
+5. **Optionally saves** the explanation to the patient's private MongoDB
+   collection so future reports can be cross-referenced and compared over time.
 
 The agent never says "you have X" or "you do not have X". It explains
 the words on the page and the literature around them. The framing is
 hard-baked into the system prompt and enforced by the response schema.
 
-## Why this fits the MongoDB track
+## Why this wins the MongoDB track
 
-MongoDB Atlas Vector Search is genuinely load-bearing here, not
-decorative:
+MongoDB Atlas Vector Search is genuinely load-bearing here, not decorative:
 
-- **Hybrid retrieval in a single aggregation pipeline.** Atlas lets us
-  combine `$vectorSearch` with `$match` structured filters and
-  `$rankFusion`-style scoring inside one Mongo query. That is the right
-  primitive for "semantically similar literature about TIRADS 3 nodules,
-  published after 2022, in English."
-- **Auto-embedding on insert via the official MongoDB MCP server.** When
-  `VOYAGE_API_KEY` is set, the MCP server's `insert-many` tool can embed
-  text fields automatically as documents go in. This removes a whole
-  embedding pipeline from our code path.
-- **One database, many shapes.** Literature, guidelines, forum excerpts,
-  and the patient's saved history all live in Atlas with different
-  schemas but unified search. That is the document model's strength and
-  it is hard to express as cleanly in a row-store.
+- **Hybrid retrieval in a single aggregation pipeline.** Atlas lets us combine
+  `$vectorSearch` with `$match` structured filters and lightweight reranking
+  inside one query. That is the right primitive for "find literature and
+  guidelines about a mildly suspicious thyroid nodule, favor recent sources,
+  and exclude irrelevant conditions."
+- **One database, many shapes.** Literature, guideline excerpts,
+  patient-experience snippets, and a user's saved history all live in Atlas
+  with different schemas but a unified retrieval surface. That flexibility is
+  the actual product advantage.
+- **Official MongoDB MCP server is visible in the demo.** Judges will see the
+  agent using the supported MongoDB tool surface instead of a hidden direct DB
+  client.
+- **Faster path to a polished submission.** Compared with the multi-partner
+  Fivetran build, this path has fewer approval blockers, a narrower surface
+  area, and a cleaner 3-minute story.
+- **Emotionally strong demo.** The before/after is immediate: incomprehensible
+  report in, plain-language explanation with cited context out.
+
+## Hackathon resource alignment
+
+This path lines up cleanly with the official resource phases:
+
+- **Core frameworks & environment:** Google Cloud trial/credits, Vertex AI,
+  Agent Builder or Agent Runtime, Atlas free tier.
+- **Action mechanisms & data connectivity:** official MongoDB MCP server as the
+  tool surface; Atlas as the source of truth instead of a decorative side store.
+- **Reasoning, state, & logic hosting:** Python agent on Cloud Run or Agent
+  Runtime, with patient-history state persisted in Atlas.
+- **Deployment & safety:** Secret Manager for secrets, Gemini safety settings,
+  Cloud Run deployment, and a public hosted URL for judging.
+
+See [`build-plan.md`](./build-plan.md) for the revised execution path.
 
 ## Stack
 
 | Layer | Tech |
 |---|---|
-| Agent runtime | Google Cloud **Agent Builder** + **Gemini 3** via Vertex AI |
+| Agent runtime | Google Cloud **Agent Builder** or **Agent Runtime** + **Gemini 3** via Vertex AI |
 | Multimodal extraction | Gemini 3 vision (PDF / image / text) |
 | Vector database | **MongoDB Atlas** with Atlas Vector Search |
-| Embeddings | **Voyage AI** (`voyage-3-large`, or `voyage-medical` if available) |
+| Embeddings | **Vertex AI text embeddings** |
 | MCP server | [Official MongoDB MCP server](https://www.mongodb.com/docs/mcp-server/tools/) |
 | Agent service | Python 3.11, FastAPI on Cloud Run |
-| Frontend | Minimal HTML form for the demo (full UI is post-pivot work) |
+| Secrets & safety | Secret Manager + Gemini safety settings |
+| Frontend | Minimal upload UI for the demo, polished only where it helps judging |
 | Repo | Public GitHub, Apache-2.0 |
 
 See [`architecture.md`](./architecture.md) for the full system diagram
@@ -123,6 +150,7 @@ and data flow.
 03-mongodb-doctors-note/
 ├── README.md                    (this file)
 ├── architecture.md              (system diagram, data flow)
+├── build-plan.md                (resource-aligned build plan)
 ├── demo-script.md               (3-minute video script)
 ├── LEGAL-DISCLAIMER.md          (the exact disclaimer text shipped in the product)
 ├── SCAFFOLD-NOTES.md            (what is done, what is stubbed, risks)
@@ -143,7 +171,7 @@ and data flow.
 ```bash
 cd agent
 cp .env.example .env
-# Fill in MONGODB_URI, VOYAGE_API_KEY, GOOGLE_CLOUD_PROJECT, etc.
+# Fill in MONGODB_URI, GOOGLE_CLOUD_PROJECT, VERTEX_EMBEDDING_MODEL, etc.
 
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
@@ -157,12 +185,10 @@ get back the structured explanation.
 
 ## Status
 
-This is a backup-tier scaffold (roughly 60% of the depth we would put
-into the primary submission). See [`SCAFFOLD-NOTES.md`](./SCAFFOLD-NOTES.md)
-for what is wired up versus stubbed, the work-hours estimate to a
-demo-able state, and the top risks (the legal/medical framing risk is
-listed first and is the one that decides whether this project ships at
-all).
+This scaffold is now the active MongoDB route. See
+[`SCAFFOLD-NOTES.md`](./SCAFFOLD-NOTES.md) for what is wired up versus stubbed,
+and [`build-plan.md`](./build-plan.md) for the revised sprint from here to a
+submission-ready demo.
 
 ## License
 

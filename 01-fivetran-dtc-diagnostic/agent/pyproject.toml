@@ -34,8 +34,9 @@ dependencies = [
   "pydantic>=2.8.0,<3.0",
   "pydantic-settings>=2.5.0,<3.0",
 
-  # Vertex AI / Gemini 3
+  # Vertex AI / Gemini
   "google-cloud-aiplatform>=1.71.0",  # TODO: confirm latest version (Gemini 3 GA may bump this)
+  "google-genai>=1.16.0",             # direct Gemini client used with ADC during local/dev
 
   # MCP client (Anthropic-led official SDK)
   "mcp>=1.0.0",                        # TODO: confirm latest version on build day

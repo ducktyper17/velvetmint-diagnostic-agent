@@ -3,9 +3,9 @@
 > Single-service FastAPI agent on Cloud Run, Gemini 3 for multimodal
 > extraction and final synthesis, MongoDB Atlas as the knowledge base and
 > personal vault, the official MongoDB MCP server as the retrieval
-> surface, and Voyage AI for embeddings. Deliberately small and boring so
-> that the medical-legal framing — not the infrastructure — is where the
-> review effort goes.
+> surface, and Vertex AI text embeddings for both corpus and query vectors.
+> Deliberately small and boring so that the medical-legal framing, safety,
+> and retrieval quality are where the review effort goes.
 
 ## System diagram (text)
 
@@ -28,17 +28,17 @@
               +-----+----------------+----------------+-------+
                     |                |                |
                     |                |                |
-        Vertex AI   |     MongoDB    |       Voyage AI (embeddings,
-        (Gemini 3)  |     MCP server |       via the MCP server's
-                    |     (stdio /   |       auto-embedding on insert)
-                    |      streamable|
-                    |      HTTP)     |
-                    v                v
-              +-----------+    +-----------+
-              | Vertex AI |    |  MongoDB  |
-              |  Gemini 3 |    |   Atlas   |
-              |  Pro      |    |  cluster  |
-              +-----------+    +-----+-----+
+        Vertex AI   |     MongoDB
+  (Gemini 3 + text  |     MCP server
+      embeddings)   |     (stdio /
+                    |      streamable
+                    |      HTTP)
+                    v
+              +-----------+      +-----------+
+              | Vertex AI |      |  MongoDB  |
+              | Gemini +  |      |   Atlas   |
+              | embeddings|      |  cluster  |
+              +-----------+      +-----+-----+
                                      |
                           +----------+----------+----------------+
                           |          |          |                |
@@ -46,7 +46,7 @@
                        (PubMed)    (e.g. ATA, (de-identified) (per-user,
                                     ACR, ESMO) excerpts)      gated)
                           \_________ all in a single Atlas project,
-                                     each with a Voyage-embedded
+                                     each with a Vertex-AI-generated
                                      vector index ______/
 ```
 
@@ -63,7 +63,7 @@ All under one Atlas database, `doctors_note`:
 
 | Collection | What it holds | Vector field | Embedding model |
 |---|---|---|---|
-| `literature` | PubMed abstracts (title + abstract) | `embedding` | Voyage `voyage-3-large` (or `voyage-medical` if GA) |
+| `literature` | PubMed abstracts (title + abstract) | `embedding` | Vertex AI text embeddings |
 | `guidelines` | Clinical guideline excerpts (ATA, ACR TIRADS, ESMO, NCCN, etc.) | `embedding` | same |
 | `forum_posts` | De-identified, consent-cleared patient-forum excerpts | `embedding` | same |
 | `user_vault` | A user's saved past explanations | `embedding` | same |
@@ -106,8 +106,8 @@ Each vector-bearing collection has one Atlas Vector Search index:
 }
 ```
 
-`numDimensions` follows whichever Voyage model we end up using; this is
-the only line that changes if we swap embedding models.
+`numDimensions` follows whichever Vertex AI embedding model we end up
+using; this is the only line that changes if we swap embedding models.
 
 ## Request flow (`POST /decode`)
 
@@ -122,8 +122,10 @@ the only line that changes if we swap embedding models.
        }
        Extraction is deliberately conservative; no interpretation.
 3.  retriever.retrieve(extracted) ->
-       Builds two aggregation pipelines (literature, forum_posts), each
-       with $vectorSearch + $match filters keyed off
+       First builds a query embedding from the extracted report summary
+       using Vertex AI text embeddings.
+       Then builds two aggregation pipelines (literature, forum_posts),
+       each with $vectorSearch + $match filters keyed off
        extracted.primary_condition and extracted.severity_tier_guess.
        Sends them to the MongoDB MCP server's `aggregate` tool.
        Returns: RetrievalBundle { lit_hits, forum_hits, guideline_hits }
@@ -138,7 +140,8 @@ the only line that changes if we swap embedding models.
          - disclaimer                (verbatim from LEGAL-DISCLAIMER.md)
          - sources                   (list of {source, title, url})
 5.  Server returns the validated JSON to the client.
-6.  (Optional) If user asks to save, we call MCP `insert-many` against
+6.  (Optional) If user asks to save, we generate an embedding for the
+    explanation with Vertex AI and call MCP `insert-many` against
     user_vault with a per-user partition key.
 ```
 
@@ -175,9 +178,8 @@ Atlas operations from an agent. Going through it gives us:
   `collection-schema`, `collection-indexes`, `create-index`,
   `insert-many`, plus Atlas management tools (`atlas-create-free-cluster`,
   `atlas-list-projects`) when Atlas creds are set.
-- Voyage AI auto-embedding on `insert-many` when `VOYAGE_API_KEY` is
-  present — meaning we never have to maintain our own embedding pipeline
-  for ingestion.
+- A clean separation of concerns: Google models create embeddings and do
+  reasoning; MongoDB Atlas stores and retrieves with the MCP tool surface.
 - A clean auditable boundary: every Atlas operation the agent performs
   is one of a fixed set of MCP tool calls. That is useful for both
   reasoning and for the legal/compliance posture.
@@ -190,7 +192,7 @@ Atlas operations from an agent. Going through it gives us:
 | MongoDB MCP server | Sidecar in the same Cloud Run service, started by `main.py` startup hook (stdio transport) |
 | Vertex AI calls | Direct from the service using the GCP project's default service account |
 | Atlas cluster | M0 free tier in the same GCP region as Cloud Run, peered via PrivateLink in production (public allowlist for the demo) |
-| Secrets | `MONGODB_URI`, `VOYAGE_API_KEY` in Secret Manager |
+| Secrets | `MONGODB_URI` and runtime config in Secret Manager |
 
 For the demo we run everything in `us-central1`.
 

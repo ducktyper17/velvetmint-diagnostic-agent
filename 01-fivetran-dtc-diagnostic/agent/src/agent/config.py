@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     google_cloud_location: str = "us-central1"
     # Optional because Cloud Run uses workload identity; set this only locally.
     google_application_credentials: str | None = None
-    vertex_model: str = "gemini-3.0-pro"
+    vertex_model: str = "gemini-2.5-pro"
 
     # ----- BigQuery ---------------------------------------------------------
 
@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     fivetran_mcp_url: HttpUrl
     fivetran_mcp_token: SecretStr
     fivetran_allow_writes: bool = True
+    fivetran_api_key: SecretStr | None = None
+    fivetran_api_secret: SecretStr | None = None
+    fivetran_mcp_server_path: str | None = None
+    fivetran_group_id: str | None = None
+    fivetran_destination_id: str | None = None
 
     # ----- MongoDB Atlas ----------------------------------------------------
 

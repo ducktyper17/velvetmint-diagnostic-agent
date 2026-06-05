@@ -17,17 +17,12 @@ authors = [{ name = "Hackathon team" }]
 # "TODO confirm" should be sanity-checked against PyPI right before the
 # first real deploy.
 dependencies = [
-  # Vertex AI / Gemini 3 access. The Vertex AI SDK is `google-cloud-aiplatform`.
-  "google-cloud-aiplatform>=1.71.0",  # TODO confirm latest at deploy time
+  # Google Gen AI SDK on Vertex AI for Gemini generation + embeddings.
+  "google-genai>=1.18.0",  # TODO confirm latest at deploy time
 
   # Mongo driver. Used only by seed_data.py for index bootstrap; the
   # request path goes through the MongoDB MCP server instead.
   "pymongo>=4.10.0",
-
-  # Voyage AI client. Real package name on PyPI is `voyageai`.
-  # We only call it directly from seed_data.py as a fallback when the
-  # MCP server's auto-embedding path is unavailable.
-  "voyageai>=0.3.0",  # TODO confirm latest at deploy time
 
   # Official Python MCP client SDK. PyPI package name is `mcp`.
   # We use it to talk to the MongoDB MCP server over stdio.
@@ -61,6 +56,7 @@ py-modules = [
   "responder",
   "prompts",
   "seed_data",
+  "vertex_ai",
 ]
 
 [tool.ruff]

@@ -16,11 +16,13 @@ Why this lives in its own module:
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from typing import Any
 
 from extractor import ExtractedReport
+from vertex_ai import embed_text_async
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +59,7 @@ class RetrievalBundle:
 
 def build_pipeline(
     *,
-    query_text: str,
+    query_vector: list[float],
     condition: str | None,
     severity_tier: str | None,
     min_year: int = 2018,
@@ -75,10 +77,8 @@ def build_pipeline(
       * `numCandidates` is generous (200) because the filtered surface is
         small per (condition, severity_tier) cell; raising it costs
         little and improves recall.
-      * We pass `query_text` straight through; Atlas / Voyage do the
-        embedding server-side when the index is configured with an
-        embedding model. If we ever switch to client-side embeddings we
-        replace `queryText` with `queryVector` here.
+      * Query embeddings are generated client-side with Vertex AI so the
+        hackathon path stays Google-only on the model side.
     """
 
     vector_filter: dict[str, Any] = {"language": {"$eq": "en"}}
@@ -93,7 +93,7 @@ def build_pipeline(
             "$vectorSearch": {
                 "index": vector_index,
                 "path": "embedding",
-                "queryText": query_text,
+                "queryVector": query_vector,
                 "numCandidates": num_candidates,
                 "limit": k,
                 "filter": vector_filter,
@@ -115,11 +115,16 @@ def build_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# MCP-driven retrieval (stubbed)
+# MCP-driven retrieval
 # ---------------------------------------------------------------------------
 
 
-async def retrieve(extracted: ExtractedReport, *, k: int = 5) -> RetrievalBundle:
+async def retrieve(
+    extracted: ExtractedReport,
+    *,
+    session: Any | None = None,
+    k: int = 5,
+) -> RetrievalBundle:
     """Run hybrid retrieval across literature, guidelines, and forum posts.
 
     Implementation outline (post-stub):
@@ -127,9 +132,10 @@ async def retrieve(extracted: ExtractedReport, *, k: int = 5) -> RetrievalBundle
          report's modality + body_site + the top-N entity names/values
          rather than the raw report text, so the embedding reflects the
          clinical question, not boilerplate header text.
-      2. Build three pipelines (literature, guidelines, forum_posts) with
+      2. Generate a Vertex embedding for that query summary.
+      3. Build three pipelines (literature, guidelines, forum_posts) with
          build_pipeline().
-      3. Send each to the MCP server's `aggregate` tool. The Python MCP
+      4. Send each to the MCP server's `aggregate` tool. The Python MCP
          client (`mcp` package) gives us a typed call:
              session.call_tool(
                  "aggregate",
@@ -137,38 +143,183 @@ async def retrieve(extracted: ExtractedReport, *, k: int = 5) -> RetrievalBundle
                   "collection": "literature",
                   "pipeline": pipeline}
              )
-      4. Normalize results into RetrievedDoc and bundle.
+      5. Normalize results into RetrievedDoc and bundle.
 
-    The stub here returns a small fixed bundle so the rest of the system
-    is independently runnable.
+    If MCP is unavailable or returns an unexpected payload shape, we fall
+    back to a small deterministic bundle so the rest of the system keeps
+    working during development.
     """
 
     db = os.getenv("MONGODB_DB", "doctors_note")
-    _ = db  # referenced for completeness; real impl uses it in MCP call args
-
     query_text = _compose_query_text(extracted)
+    query_vector = await embed_text_async(
+        query_text,
+        task_type="RETRIEVAL_QUERY",
+    )
     pipeline_lit = build_pipeline(
-        query_text=query_text,
+        query_vector=query_vector,
         condition=extracted.primary_condition,
         severity_tier=extracted.severity_tier_guess,
         k=k,
     )
     pipeline_guide = build_pipeline(
-        query_text=query_text,
+        query_vector=query_vector,
         condition=extracted.primary_condition,
         severity_tier=None,  # guidelines apply across severity tiers
         k=3,
     )
     pipeline_forum = build_pipeline(
-        query_text=query_text,
+        query_vector=query_vector,
         condition=extracted.primary_condition,
         severity_tier=extracted.severity_tier_guess,
         k=k,
     )
-    # TODO replace with real MCP calls:
-    #   from mcp import ClientSession
-    #   ... session.call_tool("aggregate", {...})
-    _ = (pipeline_lit, pipeline_guide, pipeline_forum)
+    if session is None:
+        return _stub_bundle()
+
+    try:
+        literature = await _run_aggregate(
+            session,
+            database=db,
+            collection=os.getenv("MONGODB_COLLECTION_LITERATURE", "literature"),
+            pipeline=pipeline_lit,
+        )
+        guidelines = await _run_aggregate(
+            session,
+            database=db,
+            collection=os.getenv("MONGODB_COLLECTION_GUIDELINES", "guidelines"),
+            pipeline=pipeline_guide,
+        )
+        forum_posts = await _run_aggregate(
+            session,
+            database=db,
+            collection=os.getenv("MONGODB_COLLECTION_FORUM", "forum_posts"),
+            pipeline=pipeline_forum,
+        )
+        bundle = RetrievalBundle(
+            literature=_normalize_docs("literature", literature),
+            guidelines=_normalize_docs("guidelines", guidelines),
+            forum_posts=_normalize_docs("forum_posts", forum_posts),
+        )
+        if bundle.literature or bundle.guidelines or bundle.forum_posts:
+            return bundle
+    except Exception:
+        pass
+
+    return _stub_bundle()
+
+
+def _compose_query_text(extracted: ExtractedReport) -> str:
+    """Project an ExtractedReport down to a clinical-question string.
+
+    We deliberately drop the report's header / boilerplate to keep the
+    embedding focused. Order matters: modality + body_site first, then
+    the scored finding, then descriptors.
+    """
+
+    parts: list[str] = []
+    if extracted.modality:
+        parts.append(extracted.modality)
+    if extracted.body_site:
+        parts.append(extracted.body_site)
+    for entity in extracted.entities:
+        if entity.value is not None:
+            unit = f" {entity.units}" if entity.units else ""
+            parts.append(f"{entity.name} {entity.value}{unit}")
+        for q in entity.qualifiers:
+            parts.append(q)
+    return "; ".join(parts)
+
+
+async def _run_aggregate(
+    session: Any,
+    *,
+    database: str,
+    collection: str,
+    pipeline: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Run one MongoDB MCP `aggregate` call and normalize its result payload."""
+
+    result = await session.call_tool(
+        "aggregate",
+        {
+            "database": database,
+            "collection": collection,
+            "pipeline": pipeline,
+        },
+    )
+    return _extract_rows_from_tool_result(result)
+
+
+def _extract_rows_from_tool_result(result: Any) -> list[dict[str, Any]]:
+    """Handle a few likely MCP result shapes without hard-coding one."""
+
+    structured = getattr(result, "structured_content", None) or getattr(
+        result, "structuredContent", None
+    )
+    rows = _rows_from_payload(structured)
+    if rows:
+        return rows
+
+    for item in getattr(result, "content", []) or []:
+        text = getattr(item, "text", None)
+        if not text:
+            continue
+        try:
+            rows = _rows_from_payload(json.loads(text))
+        except json.JSONDecodeError:
+            continue
+        if rows:
+            return rows
+    return []
+
+
+def _rows_from_payload(payload: Any) -> list[dict[str, Any]]:
+    """Pull result rows out of common aggregate payload containers."""
+
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("documents", "results", "items", "rows"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [row for row in value if isinstance(row, dict)]
+    return []
+
+
+def _normalize_docs(collection: str, rows: list[dict[str, Any]]) -> list[RetrievedDoc]:
+    """Convert raw aggregate rows into `RetrievedDoc` objects."""
+
+    out: list[RetrievedDoc] = []
+    for row in rows:
+        title = str(row.get("title") or "").strip()
+        snippet = str(row.get("snippet") or row.get("text") or row.get("abstract") or "").strip()
+        if not title and not snippet:
+            continue
+        score_value = row.get("score", 0.0)
+        try:
+            score = float(score_value)
+        except (TypeError, ValueError):
+            score = 0.0
+        published_year = row.get("published_year")
+        out.append(
+            RetrievedDoc(
+                collection=collection,
+                title=title or "Untitled source",
+                snippet=snippet or "No snippet returned.",
+                source=str(row.get("source") or collection),
+                url=str(row["url"]) if row.get("url") else None,
+                published_year=published_year if isinstance(published_year, int) else None,
+                score=score,
+            )
+        )
+    return out
+
+
+def _stub_bundle() -> RetrievalBundle:
+    """Fallback retrieval bundle used when MCP is not yet available."""
 
     return RetrievalBundle(
         literature=[
@@ -215,25 +366,3 @@ async def retrieve(extracted: ExtractedReport, *, k: int = 5) -> RetrievalBundle
             ),
         ],
     )
-
-
-def _compose_query_text(extracted: ExtractedReport) -> str:
-    """Project an ExtractedReport down to a clinical-question string.
-
-    We deliberately drop the report's header / boilerplate to keep the
-    embedding focused. Order matters: modality + body_site first, then
-    the scored finding, then descriptors.
-    """
-
-    parts: list[str] = []
-    if extracted.modality:
-        parts.append(extracted.modality)
-    if extracted.body_site:
-        parts.append(extracted.body_site)
-    for entity in extracted.entities:
-        if entity.value is not None:
-            unit = f" {entity.units}" if entity.units else ""
-            parts.append(f"{entity.name} {entity.value}{unit}")
-        for q in entity.qualifiers:
-            parts.append(q)
-    return "; ".join(parts)

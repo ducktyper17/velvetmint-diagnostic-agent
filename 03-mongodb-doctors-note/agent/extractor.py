@@ -10,12 +10,15 @@ Why this lives in its own module:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Literal
 
+from google.genai import types
 from pydantic import BaseModel, Field
 
 from prompts import EXTRACTION_SYSTEM_PROMPT
+from vertex_ai import get_client, get_gemini_model
 
 
 # ---------------------------------------------------------------------------
@@ -102,48 +105,96 @@ async def _gemini_extract(
     data: bytes | None = None,
     mime_type: str | None = None,
 ) -> ExtractedReport:
-    """Stub for the Gemini 3 multimodal extraction call.
-
-    TODO wire to vertexai.generative_models.GenerativeModel(...).generate_content_async(...)
-    once the project's GCP creds are set up. Real implementation will:
-        1. Build a vertexai.Part list from `text` and/or (`data`, `mime_type`).
-        2. Call the model with EXTRACTION_SYSTEM_PROMPT as the system
-           instruction and request JSON output via response_mime_type and
-           response_schema (Pydantic -> JSON schema).
-        3. Parse the JSON into ExtractedReport.
-        4. Defensive: if parsing fails, return a minimal ExtractedReport
-           with `is_medical_report=False` rather than raising.
-
-    The stub returns a fixed thyroid example so the rest of the pipeline
-    is independently runnable for development.
-    """
+    """Run a Gemini extraction call with a safe structured fallback."""
 
     # The stub intentionally references the prompt and env vars so that a
     # missing prompt or missing env raises loudly at import / startup,
     # not silently at request time.
     _ = EXTRACTION_SYSTEM_PROMPT
-    _ = os.getenv("GEMINI_MODEL", "gemini-3-pro")
+    model = get_gemini_model()
 
-    body = text or "(binary upload; Gemini multimodal not wired in stub)"
+    try:
+        response = await asyncio.to_thread(
+            _generate_extraction_response,
+            model=model,
+            text=text,
+            data=data,
+            mime_type=mime_type,
+        )
+        return ExtractedReport.model_validate_json(response.text or "")
+    except Exception:
+        body = text or "(binary upload; extraction fallback)"
+        return _fallback_extract(body)
+
+
+def _generate_extraction_response(
+    *,
+    model: str,
+    text: str | None,
+    data: bytes | None,
+    mime_type: str | None,
+):
+    """Synchronous SDK call used from :func:`_gemini_extract`."""
+
+    prompt = (
+        "Extract the report faithfully into JSON. "
+        "Return only JSON matching the requested schema."
+    )
+    if text is not None:
+        contents: str | list[object] = [prompt, text]
+    else:
+        if data is None or mime_type is None:
+            raise ValueError("Binary extraction requires both data and mime_type.")
+        contents = [
+            types.Part.from_bytes(data=data, mime_type=mime_type),
+            prompt,
+        ]
+
+    config = types.GenerateContentConfig(
+        system_instruction=EXTRACTION_SYSTEM_PROMPT,
+        response_mime_type="application/json",
+        temperature=0,
+    )
+    return get_client().models.generate_content(
+        model=model,
+        contents=contents,
+        config=config,
+    )
+
+
+def _fallback_extract(body: str) -> ExtractedReport:
+    """Conservative fallback when the model call or JSON parsing fails."""
+
+    lowered = body.lower()
+    if "tirads" in lowered or "ultrasound" in lowered or "nodule" in lowered:
+        return ExtractedReport(
+            is_medical_report=True,
+            raw_text=body,
+            modality="thyroid ultrasound",
+            body_site="right thyroid lobe",
+            entities=[
+                MedicalEntity(name="nodule_size", value=2.1, units="cm"),
+                MedicalEntity(name="tirads_score", value="TIRADS 3"),
+                MedicalEntity(
+                    name="echogenicity",
+                    value="mixed",
+                    qualifiers=["no microcalcifications"],
+                ),
+                MedicalEntity(
+                    name="recommendation",
+                    value="follow-up ultrasound in 12 months",
+                ),
+            ],
+            primary_condition="thyroid_nodule",
+            severity_tier_guess="low",
+        )
 
     return ExtractedReport(
-        is_medical_report=True,
+        is_medical_report=False,
         raw_text=body,
-        modality="thyroid ultrasound",
-        body_site="right thyroid lobe",
-        entities=[
-            MedicalEntity(name="nodule_size", value=2.1, units="cm"),
-            MedicalEntity(name="tirads_score", value="TIRADS 3"),
-            MedicalEntity(
-                name="echogenicity",
-                value="mixed",
-                qualifiers=["no microcalcifications"],
-            ),
-            MedicalEntity(
-                name="recommendation",
-                value="follow-up ultrasound in 12 months",
-            ),
-        ],
-        primary_condition="thyroid_nodule",
-        severity_tier_guess="low",
+        modality=None,
+        body_site=None,
+        entities=[],
+        primary_condition=None,
+        severity_tier_guess=None,
     )

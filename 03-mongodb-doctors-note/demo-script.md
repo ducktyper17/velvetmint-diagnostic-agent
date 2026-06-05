@@ -93,8 +93,8 @@ VO: *"The agent runs a hybrid search against a MongoDB Atlas knowledge
 base — PubMed abstracts, clinical guidelines, and de-identified patient
 experiences. Vector search for meaning, structured filters for
 condition, severity, and recency, all in one Atlas aggregation pipeline.
-Embeddings are Voyage AI, auto-generated through the official MongoDB
-MCP server."*
+Embeddings come from Google Cloud Vertex AI, and Atlas does the
+retrieval through the official MongoDB MCP server."*
 
 ### 1:35–2:20 — The output card (45s, the hero moment)
 
@@ -139,7 +139,7 @@ ones, the specific ones the literature suggests."*
 ### 2:20–2:40 — The MongoDB and GCP money shot (20s)
 
 Visual: cut to a stack-overlay screen. Three logos stacked: Gemini 3,
-MongoDB Atlas, Voyage AI. Below them, a code snippet of the actual
+MongoDB Atlas, Vertex AI. Below them, a code snippet of the actual
 `$vectorSearch` aggregation we sent. Subtitle: *"One Atlas query.
 Vector recall plus structured pre-filters plus recency reranking."*
 
@@ -156,8 +156,8 @@ VO: *"Doctor's Note Decoder. We do not diagnose. We explain. So you can
 walk into your appointment informed instead of terrified."*
 
 Final frame: project name, GitHub repo URL, hackathon tag, the words
-*"Built on Google Cloud Agent Builder, Gemini 3, MongoDB Atlas, Voyage
-AI."*
+*"Built on Google Cloud Agent Builder, Gemini 3, Vertex AI, and MongoDB
+Atlas."*
 
 ## Hard rules during recording
 

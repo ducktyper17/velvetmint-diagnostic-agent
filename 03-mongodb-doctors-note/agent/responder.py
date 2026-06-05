@@ -11,15 +11,19 @@ Why this lives in its own module:
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import json
 import os
 from typing import Any
 
+from google.genai import types
 from pydantic import BaseModel, Field, model_validator
 
 from extractor import ExtractedReport
 from prompts import DISCLAIMER_LONG, SYNTHESIS_SYSTEM_PROMPT
 from retriever import RetrievalBundle, RetrievedDoc
+from vertex_ai import get_client, get_embedding_model, get_gemini_model
 
 
 # ---------------------------------------------------------------------------
@@ -125,62 +129,26 @@ class DecodedReport(BaseModel):
 async def respond(
     extracted: ExtractedReport, bundle: RetrievalBundle
 ) -> DecodedReport:
-    """Produce the final structured response.
-
-    Stub: returns a deterministic example so the API and validators are
-    exercised end-to-end without a Vertex AI call. Real implementation:
-        1. Build a single user-turn message with ExtractedReport JSON and
-           RetrievalBundle JSON.
-        2. Call Gemini 3 with SYNTHESIS_SYSTEM_PROMPT, response_mime_type
-           = application/json, response_schema = DecodedReport.
-        3. Parse and validate. On validation failure, return a soft
-           fallback (still with the disclaimer attached).
-    """
+    """Produce the final structured response with a safe fallback."""
 
     _ = SYNTHESIS_SYSTEM_PROMPT  # imported so missing prompt fails at import
-    _ = os.getenv("GEMINI_MODEL", "gemini-3-pro")
-
-    sources = _flatten_sources(bundle)
-
-    return DecodedReport(
-        translation=(
-            "Your report describes a 2.1 cm nodule in the right lobe of your "
-            "thyroid. 'TIRADS 3' is the radiologist's standardized score for "
-            "how suspicious the nodule looks on ultrasound; TIRADS 3 means "
-            "'mildly suspicious'."
-        ),
-        what_this_means=(
-            "Your report's recommendation is a follow-up ultrasound in 12 "
-            "months. Per the ACR 2017 TI-RADS guideline, this is the "
-            "standard interval for a TIRADS 3 nodule under 2.5 cm: the "
-            "intent is to watch the nodule, not to treat it now."
-        ),
-        statistical_context=(
-            "In published meta-analyses, roughly 5 in 100 TIRADS 3 nodules "
-            "of this size turn out to be malignant on biopsy; the other 95 "
-            "are benign. Biopsy is not standardly performed for TIRADS 3 "
-            "nodules under 2.5 cm unless other features change."
-        ),
-        questions_to_ask=[
-            "Should we baseline labs (TSH, free T4) before the follow-up scan?",
-            "If the nodule grows by the 12-month scan, what is the next step?",
-            "Are there features in the scan that change the 12-month timeline?",
-        ],
-        likely_followup=(
-            "A follow-up ultrasound in about 12 months is likely; you may "
-            "want to confirm the exact timing with your clinician at your "
-            "next appointment."
-        ),
-        disclaimer=DISCLAIMER_LONG,
-        sources=sources,
-        is_emergency_shaped=False,
-        metadata={
+    try:
+        response = await asyncio.to_thread(
+            _generate_response,
+            extracted=extracted,
+            bundle=bundle,
+        )
+        decoded = DecodedReport.model_validate_json(response.text or "")
+        decoded.metadata = {
+            **decoded.metadata,
             "generated_at": dt.datetime.utcnow().isoformat() + "Z",
-            "gemini_model": os.getenv("GEMINI_MODEL", "gemini-3-pro"),
-            "voyage_model": os.getenv("VOYAGE_MODEL", "voyage-3-large"),
-            "stub": True,
-        },
-    )
+            "gemini_model": get_gemini_model(),
+            "embedding_model": get_embedding_model(),
+            "stub": False,
+        }
+        return decoded
+    except Exception as exc:
+        return _fallback_response(bundle, error=exc)
 
 
 def _flatten_sources(bundle: RetrievalBundle) -> list[SourceCitation]:
@@ -204,4 +172,83 @@ def _to_citation(doc: RetrievedDoc) -> SourceCitation:
         title=doc.title,
         url=doc.url,
         collection=doc.collection,
+    )
+
+
+def _generate_response(
+    *,
+    extracted: ExtractedReport,
+    bundle: RetrievalBundle,
+):
+    """Synchronous SDK call used from :func:`respond`."""
+
+    payload = json.dumps(
+        {
+            "extracted_report": extracted.model_dump(mode="json"),
+            "retrieval_bundle": _bundle_to_dict(bundle),
+        },
+        indent=2,
+    )
+    config = types.GenerateContentConfig(
+        system_instruction=SYNTHESIS_SYSTEM_PROMPT,
+        response_mime_type="application/json",
+        temperature=0.2,
+    )
+    return get_client().models.generate_content(
+        model=get_gemini_model(),
+        contents=payload,
+        config=config,
+    )
+
+
+def _bundle_to_dict(bundle: RetrievalBundle) -> dict[str, list[dict[str, Any]]]:
+    """Convert retrieval bundle dataclasses into JSON-serializable payloads."""
+
+    return {
+        "literature": [doc.__dict__ for doc in bundle.literature],
+        "guidelines": [doc.__dict__ for doc in bundle.guidelines],
+        "forum_posts": [doc.__dict__ for doc in bundle.forum_posts],
+    }
+
+
+def _fallback_response(bundle: RetrievalBundle, *, error: Exception) -> DecodedReport:
+    """Return a conservative response when Gemini generation fails."""
+
+    sources = _flatten_sources(bundle)
+    return DecodedReport(
+        translation=(
+            "Your report describes a finding that should be reviewed in context "
+            "with your clinician. I could not safely generate a more specific "
+            "plain-language explanation from the current model response."
+        ),
+        what_this_means=(
+            "The safest next step is to use the report language and the cited "
+            "sources below as preparation for your appointment, rather than "
+            "treating this response as a diagnosis."
+        ),
+        statistical_context=(
+            "I do not have a reliable statistic to provide from the current "
+            "response path. Please use the cited sources and confirm the "
+            "relevant numbers with your clinician."
+        ),
+        questions_to_ask=[
+            "Can you walk me through what the key terms in this report mean?",
+            "What follow-up, if any, do you expect based on this report?",
+            "Which part of this report matters most for my next appointment?",
+        ],
+        likely_followup=(
+            "A follow-up discussion with your clinician is likely the right "
+            "next step so the report can be interpreted with your full history."
+        ),
+        disclaimer=DISCLAIMER_LONG,
+        sources=sources,
+        is_emergency_shaped=False,
+        metadata={
+            "generated_at": dt.datetime.utcnow().isoformat() + "Z",
+            "gemini_model": get_gemini_model(),
+            "embedding_model": get_embedding_model(),
+            "stub": False,
+            "fallback": True,
+            "error_type": type(error).__name__,
+        },
     )

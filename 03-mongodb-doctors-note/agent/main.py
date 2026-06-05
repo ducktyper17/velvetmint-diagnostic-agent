@@ -12,11 +12,14 @@ Why this is intentionally thin:
 from __future__ import annotations
 
 import os
-from contextlib import asynccontextmanager
+import shlex
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from extractor import extract_from_bytes, extract_from_text
 from prompts import DISCLAIMER_PLAIN
@@ -30,15 +33,32 @@ load_dotenv()
 async def lifespan(app: FastAPI):
     """Bring up dependencies before serving traffic, tear down after.
 
-    TODO start the MongoDB MCP server subprocess here (using the
-    `mcp` Python client and the MCP_SERVER_CMD / MCP_SERVER_ARGS env
-    vars). For the backup scaffold we leave a hook so that wiring it
-    is a one-file change.
+    Uses stdio transport so the FastAPI service owns the MongoDB MCP
+    subprocess directly in local dev and on Cloud Run.
     """
 
-    app.state.mcp_session = None  # populated when MCP is wired
-    yield
-    # No teardown needed in the stub.
+    stack = AsyncExitStack()
+    try:
+        command = os.getenv("MCP_SERVER_CMD", "npx")
+        raw_args = os.getenv(
+            "MCP_SERVER_ARGS",
+            "-y mongodb-mcp-server --connection-string ${MONGODB_URI}",
+        )
+        args = [os.path.expandvars(arg) for arg in shlex.split(raw_args)]
+        server_params = StdioServerParameters(
+            command=command,
+            args=args,
+            env=os.environ.copy(),
+        )
+        read, write = await stack.enter_async_context(stdio_client(server_params))
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+
+        app.state.mcp_session = session
+        app.state.mcp_stack = stack
+        yield
+    finally:
+        await stack.aclose()
 
 
 app = FastAPI(
@@ -59,6 +79,7 @@ async def health() -> dict[str, str]:
 
 @app.post("/decode", response_model=DecodedReport)
 async def decode(
+    request: Request,
     text: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
 ) -> DecodedReport:
@@ -89,7 +110,7 @@ async def decode(
             detail="Input does not appear to be a medical report.",
         )
 
-    bundle = await retrieve(extracted)
+    bundle = await retrieve(extracted, session=request.app.state.mcp_session)
     return await respond(extracted, bundle)
 
 
@@ -108,10 +129,9 @@ async def vault_save(
     if not expected or token != expected:
         raise HTTPException(status_code=401, detail="Invalid vault token.")
 
-    # TODO call MCP `insert-many` against MONGODB_COLLECTION_VAULT, with
-    # auto-embedding (when VOYAGE_API_KEY is set the MCP server will
-    # embed text fields automatically on insert). For the stub we just
-    # acknowledge.
+    # TODO call MCP `insert-many` against MONGODB_COLLECTION_VAULT after
+    # attaching a client-side Vertex embedding for the explanation text.
+    # For the stub we just acknowledge.
     _ = decoded
 
     return {"status": "saved (stub)"}

@@ -1,0 +1,46 @@
+stages:
+  - test
+  - build
+  - upload
+  - deploy
+
+variables:
+  GITLAB_IMAGE: $CI_REGISTRY_IMAGE/main:$CI_COMMIT_SHORT_SHA
+  AR_IMAGE: $GOOGLE_ARTIFACT_REGISTRY_REPOSITORY_LOCATION-docker.pkg.dev/$GOOGLE_ARTIFACT_REGISTRY_PROJECT_ID/$GOOGLE_ARTIFACT_REGISTRY_REPOSITORY_NAME/main:$CI_COMMIT_SHORT_SHA
+
+test:
+  image: python:3.11-slim
+  stage: test
+  before_script:
+    - python -m pip install --upgrade pip
+    - pip install -e "./agent[dev]"
+  script:
+    - pytest
+
+build:
+  image: docker:24.0.5
+  stage: build
+  services:
+    - docker:24.0.5-dind
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - docker build -t "$GITLAB_IMAGE" .
+    - docker push "$GITLAB_IMAGE"
+
+include:
+  - template: Jobs/Dependency-Scanning.gitlab-ci.yml
+  - template: Jobs/SAST.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+  - component: gitlab.com/google-gitlab-components/artifact-registry/upload-artifact-registry@main
+    inputs:
+      stage: upload
+      source: $GITLAB_IMAGE
+      target: $AR_IMAGE
+  - component: gitlab.com/google-gitlab-components/cloud-run/deploy-cloud-run@main
+    inputs:
+      stage: deploy
+      project_id: $GOOGLE_ARTIFACT_REGISTRY_PROJECT_ID
+      service: $CLOUD_RUN_SERVICE
+      region: $CLOUD_RUN_REGION
+      image: $AR_IMAGE

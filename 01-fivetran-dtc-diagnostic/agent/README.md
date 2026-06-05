@@ -38,24 +38,39 @@ agent/
 # 1. Clone and enter
 cd agent
 
-# 2. Virtualenv + install
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -e ".[dev]"
+# 2. Install Python 3.11 if needed (uv is already present on this machine)
+uv python install 3.11
 
-# 3. Config
+# 3. Virtualenv + install
+uv venv --python 3.11 .venv
+source .venv/bin/activate
+uv pip install --python .venv/bin/python -e ".[dev]" google-adk
+
+# 4. Config
 cp .env.example .env
 # edit .env to fill in:
 #   GOOGLE_CLOUD_PROJECT
-#   GOOGLE_APPLICATION_CREDENTIALS  (path to a service-account key JSON)
 #   FIVETRAN_MCP_URL                (where the MCP is running)
 #   FIVETRAN_MCP_TOKEN              (bearer token you generate)
 #   MONGODB_URI
 
-# 4. (Optional) authenticate gcloud so BigQuery client picks up app default creds
+# 5. Authenticate with ADC (recommended)
+# This machine's ~/.config is root-owned, so gcloud uses a user-writable config dir.
+export CLOUDSDK_CONFIG="$HOME/.local/share/gcloud-config"
+export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+
+# If gcloud is not installed yet, install it once:
+# curl -L "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-darwin-arm.tar.gz" -o "$HOME/google-cloud-cli-darwin-arm.tar.gz"
+# tar -xzf "$HOME/google-cloud-cli-darwin-arm.tar.gz" -C "$HOME"
+# "$HOME/google-cloud-sdk/install.sh" --quiet --path-update=false --usage-reporting=false --command-completion=false
+
 gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
 ```
+
+With ADC enabled, leave `GOOGLE_APPLICATION_CREDENTIALS` unset locally. The
+BigQuery and Vertex AI clients will automatically pick up your logged-in Google
+identity.
 
 ## Running the Fivetran MCP server alongside
 

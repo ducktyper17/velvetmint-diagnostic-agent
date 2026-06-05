@@ -19,3 +19,7 @@ build/
 .claude/
 *.code-workspace
 IDEAS.pdf
+
+# Transient agent run artifacts (per-run, regenerable)
+**/out/
+**/run-loop.log

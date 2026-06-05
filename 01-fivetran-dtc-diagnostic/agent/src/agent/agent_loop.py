@@ -1,10 +1,10 @@
-"""ReAct-style agent loop: Gemini 3 plans, picks tools, dispatches them.
+"""ReAct-style agent loop: Gemini plans, picks tools, dispatches them.
 
 The loop is intentionally simple and easy to reason about for hackathon
 judges who skim the source:
 
     1. Build a single multi-turn prompt: system + few-shots + history.
-    2. Call Gemini 3 (Vertex AI). Parse a tool call out of the response.
+    2. Call Gemini on Vertex AI. Parse the next action out of the response.
     3. Dispatch the tool via :mod:`agent.tools`.
     4. Append the tool result as a new turn.
     5. Repeat until Gemini calls ``finalize_diagnosis`` or we hit the
@@ -13,19 +13,24 @@ judges who skim the source:
 Each step yields an :class:`AgentEvent` so the FastAPI handler can stream
 the loop's progress to the browser via SSE.
 
-The actual Vertex AI invocation is stubbed with a TODO — we'll fill it in
-on Day 2 of the build plan once we've confirmed the Gemini 3 model slug
-and the function-calling JSON schema in Vertex's API.
+The backend still owns actual tool execution. Gemini returns a structured
+"next step" object that says whether to call one tool or finalize.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Literal
+
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
 
 from agent import prompts
 from agent.config import Settings
@@ -180,35 +185,57 @@ class _ModelDecision:
     final_findings: list[Finding] | None = None
 
 
+class _DecisionEnvelope(BaseModel):
+    """Structured next-step schema returned by Gemini."""
+
+    thought: str = Field(min_length=1, max_length=240)
+    action: Literal["tool", "final"]
+    tool_name: str | None = None
+    tool_args: dict[str, Any] = Field(default_factory=dict)
+
+
 async def _call_gemini(*, history: list[dict[str, str]], settings: Settings) -> _ModelDecision:
-    """Call Gemini 3 with function-calling enabled and parse the response.
+    """Call Gemini on Vertex AI and parse the next action."""
+    client = _get_genai_client(
+        project=settings.google_cloud_project,
+        location=settings.google_cloud_location,
+    )
+    prompt = _render_model_prompt(history)
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model=settings.vertex_model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_DecisionEnvelope,
+        ),
+    )
+    parsed = response.parsed
+    if parsed is None:
+        raise RuntimeError("Gemini returned no parsed decision payload")
+    decision = parsed if isinstance(parsed, _DecisionEnvelope) else _DecisionEnvelope.model_validate(parsed)
 
-    TODO: replace with the real Vertex AI call. The skeleton:
-
-        from vertexai.generative_models import GenerativeModel, Tool
-        model = GenerativeModel(
-            settings.vertex_model,
-            tools=[_TOOL_SCHEMA],
-            system_instruction=prompts.SYSTEM_PROMPT,
-        )
-        resp = await model.generate_content_async(history)
-        return _parse_decision(resp)
-
-    Until then we return a deterministic stub so the loop is testable.
-    """
-    _ = history, settings
-    # Stub: the agent immediately asks for setup_connector(shopify) on turn 1
-    # and finalizes on turn 2 to keep tests fast.
-    if len(history) <= 3:
+    if decision.action == "final":
         return _ModelDecision(
-            thought="Plan: pull data from every channel that influences revenue.",
-            tool_name="setup_connector",
-            tool_args={"source": "shopify"},
+            thought=decision.thought,
+            is_final=True,
+            final_findings=None,
         )
+
+    tool_name = decision.tool_name or ""
+    if tool_name not in {
+        "setup_connector",
+        "trigger_sync",
+        "check_sync_status",
+        "query_synced_data",
+    }:
+        raise ValueError(f"Gemini returned unsupported tool {tool_name!r}")
+
     return _ModelDecision(
-        thought="I have enough evidence; finalizing.",
-        is_final=True,
-        final_findings=None,
+        thought=decision.thought,
+        is_final=False,
+        tool_name=tool_name,
+        tool_args=_normalize_tool_args(tool_name=tool_name, tool_args=dict(decision.tool_args)),
     )
 
 
@@ -234,6 +261,59 @@ def _finding_to_dict(f: Finding) -> dict[str, Any]:
     }
 
 
+@lru_cache(maxsize=4)
+def _get_genai_client(*, project: str, location: str) -> genai.Client:
+    """Create and cache a Gen AI client per project/location."""
+    return genai.Client(vertexai=True, project=project, location=location)
+
+
+def _render_model_prompt(history: list[dict[str, str]]) -> str:
+    """Flatten the current conversation into a single prompt for Gemini."""
+    rendered_turns = "\n\n".join(
+        f"{turn['role'].upper()}:\n{turn['content']}" for turn in history
+    )
+    return f"""\
+You are selecting the single next step for the DTC Brand Health Diagnostic Agent.
+
+Return exactly one JSON object matching the response schema. Do not add markdown.
+
+Decision rules:
+- If more evidence is needed, choose exactly one tool call.
+- If enough evidence is available from prior tool results, return `action=\"final\"`.
+- Keep `thought` to one short sentence suitable for live streaming to a founder.
+- When `action=\"tool\"`, `tool_name` must be one of:
+  setup_connector, trigger_sync, check_sync_status, query_synced_data
+- Use these exact argument names:
+  - setup_connector -> {{\"source\": \"shopify|klaviyo|meta_ads|google_ads|tiktok_ads|stripe|yotpo\"}}
+  - trigger_sync -> {{\"connection_id\": \"...\"}}
+  - check_sync_status -> {{\"connection_id\": \"...\"}}
+  - query_synced_data -> {{\"metric\": \"...\", \"window_days\": 30}}
+- When `action=\"final\"`, leave `tool_name` null and `tool_args` empty.
+- Never invent tools, metrics, sources, or connection ids that do not appear in
+  the prompt or previous tool results.
+
+Conversation:
+
+{rendered_turns}
+"""
+
+
+def _normalize_tool_args(*, tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+    """Accept minor field-name drift from the model without breaking the loop."""
+    normalized = dict(tool_args)
+    if tool_name == "setup_connector" and "source" not in normalized:
+        for alias in ("source_type", "source_name", "connector", "service"):
+            if alias in normalized:
+                normalized["source"] = normalized.pop(alias)
+                break
+    if tool_name == "query_synced_data" and "metric" not in normalized:
+        for alias in ("metric_name", "query", "analysis"):
+            if alias in normalized:
+                normalized["metric"] = normalized.pop(alias)
+                break
+    return normalized
+
+
 def _resolve_destination_id(settings: Settings, brand_id: str) -> str:
     """Look up the Fivetran destination id for ``brand_id``.
 
@@ -242,12 +322,12 @@ def _resolve_destination_id(settings: Settings, brand_id: str) -> str:
     """
     # TODO: replace with MongoDB lookup keyed on brand_id once we have
     # multi-brand support. Day-12 work.
-    _ = settings, brand_id
-    return "REPLACE_ME_FIVETRAN_DESTINATION_ID"
+    _ = brand_id
+    return settings.fivetran_destination_id or "REPLACE_ME_FIVETRAN_DESTINATION_ID"
 
 
 def _resolve_group_id(settings: Settings, brand_id: str) -> str:
     """Look up the Fivetran group id for ``brand_id``."""
     # TODO: same as above.
-    _ = settings, brand_id
-    return "REPLACE_ME_FIVETRAN_GROUP_ID"
+    _ = brand_id
+    return settings.fivetran_group_id or "REPLACE_ME_FIVETRAN_GROUP_ID"

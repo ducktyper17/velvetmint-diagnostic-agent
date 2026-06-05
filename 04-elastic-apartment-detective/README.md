@@ -1,68 +1,181 @@
-# Track 4: Elastic — Apartment Hunting Detective (one-pager)
+# Track 4: Elastic — Apartment Hunting Detective
 
-> **This is a pivot backup, not a primary build.** If our main project hits a wall, this is the next-best target.
+## Positioning
+This is the strongest Elastic-specific direction in the repo if we want a fast, judges-friendly build that makes the partner feel essential instead of decorative.
+
+The old version was too broad: too many cities, too many sources, too much ingestion. The winning version is narrower and sharper.
 
 ## One-liner
-*"Zillow tells you a price. This agent tells you the truth."* — A semantic-search agent that researches an apartment listing across public data (HPD violations, recent Reddit/Yelp/Curbed mentions, court records, noise complaints, restaurant-noise reports) and gives the renter a brutal honesty report.
+*"Paste a listing. Get the truth before you sign."*  
+An evidence-backed rental due-diligence agent that takes a StreetEasy or Zillow listing, searches public housing and neighborhood signals, and returns a renter risk brief with citations, red flags, and suggested questions to ask the landlord.
 
-## Why Elastic
-The data is all public and unstructured — exactly what Elastic's hybrid keyword + vector search exists for. Almost every search becomes "find me Reddit posts about X address that read like complaints, even if they don't say 'complaint.'" That's pure semantic search territory.
+## Why this can win the Elastic track
+This idea matches what Elastic is explicitly pushing in the hackathon resources:
 
-## Partner integration points
-- **Elastic Agent Builder MCP server** (Kibana 9.2+) with custom tools:
-  - `search_apartment_complaints` (vector + keyword over indexed Reddit/Yelp/Curbed/local-news)
-  - `query_hpd_violations` (structured search over HPD JSON dataset)
-  - `query_noise_complaints` (structured search over 311 NYC data, plus equivalents for SF, LA, etc.)
-  - `find_nearby_restaurant_noise` (geo-bounded search over Yelp + 311 noise)
-- ES|QL for the structured queries; semantic kNN for the vibe/complaint searches.
+- **Hybrid retrieval** over messy text and structured records
+- **ES|QL tools** for fast filters, aggregations, and comparisons
+- **Elastic as a context layer** so the agent writes back building summaries and gets smarter on repeat queries
+- **Built-in MCP server** from Elastic Agent Builder, exposed directly to a Gemini agent on Google Cloud
 
-## Architecture (rough)
+This is not "search with a chatbot UI." Elastic is doing the hard part:
+
+1. turning mixed public data into agent-usable tools,
+2. retrieving the right evidence across structured and unstructured sources,
+3. storing normalized building memory so the second query is faster and smarter.
+
+## The better path
+We should build **NYC-only MVP** first and optimize for one killer demo, not nationwide coverage.
+
+### Scope cuts that make this viable
+- **One city:** NYC only
+- **One primary user flow:** paste listing URL -> get risk report
+- **Four data sources in MVP:**
+  - NYC HPD violations
+  - NYC 311 complaints (noise, heat, pests, illegal dumping, etc.)
+  - Curated Reddit/news corpus for tenant sentiment and anecdotes
+  - Listing metadata extracted from StreetEasy/Zillow page
+- **One memory layer:** a `building_briefs` index where the agent stores extracted facts, summaries, and prior findings
+
+### Explicitly out for MVP
+- Multi-city support
+- Yelp ingestion
+- Court-record integrations
+- PDF generation
+- Full autonomous browsing across the open web
+
+Those can all exist as stretch goals, but they should not be on the critical path.
+
+## Product story
+Zillow tells renters what looks good. This agent tells them what could go wrong.
+
+The output is not just a score. It answers:
+
+- What building-level risks already show up in public records?
+- Is this address in a recurring complaint hotspot?
+- Are there strong text signals about pests, heat, management issues, or nightlife noise?
+- What are the top 3 questions the renter should ask before applying?
+
+That makes the agent useful, legible, and emotionally sticky in a 3-minute demo.
+
+## Why Elastic is load-bearing
+The core motion is: "combine exact facts with fuzzy warnings."
+
+That is exactly where Elastic wins:
+
+- **HPD + 311** need structured filters and aggregations -> ES|QL tools
+- **Reddit/news sentiment** needs semantic and hybrid search -> Elastic search tools
+- **Repeat usage** benefits from stored memory -> write summaries and extracted facts back into Elasticsearch
+- **Follow-up questions** get better because the agent can search both raw evidence and prior synthesized briefs
+
+Without Elastic, this becomes a brittle pile of scripts. With Elastic, it becomes one search-native context layer.
+
+## Recommended architecture
+```text
+User pastes StreetEasy/Zillow URL
+  -> Cloud Run listing parser extracts normalized address + listing metadata
+  -> Gemini agent on Google Cloud Agent Builder or a code-owned backend calls Elastic MCP tools
+     -> search_building_memory
+     -> get_hpd_violations
+     -> get_311_signals
+     -> search_tenant_sentiment
+     -> compare_to_neighborhood_baseline
+  -> agent synthesizes a renter brief with citations
+  -> save_building_brief writes the normalized summary back to Elastic
+Output: renter risk report + supporting evidence + "questions to ask"
 ```
-User submits listing URL (Zillow/StreetEasy/Apartments.com)
-  → Cloud Function scrapes address + basic metadata
-  → Agent Builder + Gemini 3 picks tools
-     ├── search apartment-name + address in indexed Reddit
-     ├── search building name in indexed Curbed/Streetsblog
-     ├── query HPD violations DB
-     ├── query 311 noise complaints
-     └── search Yelp for nearby noise complaints
-  → Agent synthesizes a "truth report" with risk score + flags
-Output: PDF + dashboard with red flags highlighted
-```
 
-## Data we'd ingest into Elastic (Day 3–6)
-- 5 years of Reddit r/AskNYC, r/sanfrancisco, r/AskLA, etc.
-- Curbed + Streetsblog + The Real Deal articles
-- NYC HPD Violations dataset (open data)
-- 311 noise complaints (NYC, SF, LA — open data)
-- Yelp reviews (with restaurant geo info)
-- Court records (eviction filings, where public)
+## MCP tool design
+These are the tools that make the demo feel real:
 
-This is ~10 GB and the bulk of the work.
+### 1. `search_building_memory`
+Checks whether we have already analyzed this building or address. Returns stored summaries, extracted red flags, and prior evidence links.
 
-## Demo flow (3 min)
-- 0:00–0:15: Hook — "Zillow won't tell you the building has 14 HPD violations. This agent will."
-- 0:15–0:45: Paste a Zillow URL. Agent kicks off.
-- 0:45–2:15: Reasoning streams as agent searches across 6 data sources. Real findings appear: "14 open HPD violations including lead paint", "3 Reddit threads about bedbugs in this building (2024, 2025)", "Restaurant downstairs has 47 noise complaints this year", "Building lost a tenant lawsuit for $42K in 2024."
-- 2:15–2:45: Final report card. Risk score: 7.4/10. RED FLAGS: lead paint, noise.
-- 2:45–3:00: Tagline + tech stack.
+### 2. `get_hpd_violations`
+ES|QL-backed tool over the HPD dataset. Returns open violations, recent severe issues, recurring categories, and counts by type.
 
-## Why this is our backup, not primary
-- **Data ingestion is heavy** — we'd burn a week on it before the agent gets interesting
-- **City-specific data limits the universal-pain story** (works great for NYC, weaker for smaller cities)
-- **Partner is "merely" doing search** — not autonomously orchestrating systems like Fivetran in write mode
+### 3. `get_311_signals`
+ES|QL-backed tool over NYC 311 complaints near the address. Supports time windows, radius filters, and category groupings.
 
-## When to pivot to this
-- If GCP Agent Builder access is blocked but we have Elastic Cloud working (Elastic Agent Builder is GA)
-- If we want a lighter scope (no SaaS sandboxes to set up — just ingest public data)
+### 4. `search_tenant_sentiment`
+Hybrid search over curated Reddit and local-news chunks. Finds posts and articles that feel complaint-like even when the wording is indirect.
 
-## Estimated build effort
-- 4 days data ingestion + indexing
-- 6 days agent + tools + UI
-- 4 days polish + video + Devpost
-- 3 days buffer
+### 5. `compare_to_neighborhood_baseline`
+Aggregates complaint density and category mix against nearby listings or ZIP-level baselines so we can say "this is materially worse than the local norm."
 
-Comfortable in 17 days with focused work.
+### 6. `save_building_brief`
+Writes back a normalized building brief with risk factors, confidence, and evidence pointers. This is the context-layer move that makes Elastic feel advanced.
 
-## Honest weakness
-The Elastic Agent Builder MCP is relatively new (GA in Kibana 9.3) — fewer worked examples in the wild than the Fivetran or MongoDB MCPs. We'd be on the bleeding edge.
+## Data plan
+The old draft assumed massive ingestion. We do not need that.
+
+### MVP ingestion
+- **NYC HPD violations** for building-level hard evidence
+- **NYC 311 complaints** for quality-of-life signals
+- **Small curated Reddit/news corpus** for semantic search and emotional proof
+- **Optional seed set of known demo addresses** so the demo is guaranteed to sing
+
+This is enough to show hybrid search, ES|QL, memory, and grounded reporting without drowning in ETL.
+
+## Demo flow (3 minutes)
+### 0:00-0:20
+Hook: "Apartment sites optimize for conversion. We optimize for regret prevention."
+
+### 0:20-0:45
+Paste a real listing URL. The agent extracts the address and explains what it is checking.
+
+### 0:45-1:45
+Tool calls stream:
+- recurring heat complaints
+- rodent or pest violations
+- unusual neighborhood noise density
+- complaint-like Reddit or local-news mentions
+
+### 1:45-2:25
+Final renter brief appears:
+- overall risk score
+- top red flags
+- supporting evidence
+- confidence level
+- "questions to ask before you apply"
+
+### 2:25-3:00
+Follow-up question:
+"Would you apply here if I work nights?" or "What is the single biggest concern?"
+
+That follow-up is where the stored context and Elastic retrieval really shine.
+
+## Judge-facing score thesis
+### Technological implementation
+Strong because Elastic MCP is doing real work across both hybrid retrieval and ES|QL tool calls, not just a single decorative search.
+
+### Design
+Strong because the UX is simple, emotional, and obvious in one screen: paste listing -> get truth report.
+
+### Potential impact
+Very strong because renters make expensive, stressful decisions with incomplete information. This is not a novelty use case.
+
+### Quality of the idea
+Strong because most real-estate tools are listing marketplaces, not adversarial due-diligence agents.
+
+## Build sequence
+See `04-elastic-apartment-detective/build-plan.md` for the execution path. The short version:
+
+1. Stand up Elastic Serverless + Agent Builder
+2. Load HPD + 311
+3. Create the 5-6 MCP tools above
+4. Build the listing parser and Gemini orchestration
+5. Add memory writeback
+6. Polish the renter brief UX around one unforgettable demo listing
+
+## Honest risks
+- **Address matching can be messy** -> normalize aggressively and seed known demo addresses
+- **Too little text corpus weakens semantic wow-factor** -> curate a small but high-signal Reddit/news set early
+- **Agent feels like a report generator** -> keep live tool streaming and follow-up Q&A in the demo
+- **Elastic memory layer gets skipped** -> do not skip it; this is one of the best differentiators from the old version
+
+## Bottom line
+If we commit to Elastic, this should be treated as a **primary build with ruthless scope control**, not as a backup that tries to ingest the world.
+
+The winning shape is:
+
+**one city, one paste-a-link flow, four data sources, six good tools, one unforgettable renter-risk demo.**

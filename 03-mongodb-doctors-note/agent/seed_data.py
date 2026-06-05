@@ -41,6 +41,8 @@ except ImportError as exc:  # pragma: no cover
     )
     raise SystemExit(1) from exc
 
+from vertex_ai import embed_text, get_embedding_dimensions
+
 
 # ---------------------------------------------------------------------------
 # Sample documents. Deliberately minimal; expand for real demo.
@@ -147,9 +149,8 @@ SAMPLE_FORUM: list[dict[str, Any]] = [
 
 # ---------------------------------------------------------------------------
 # Index spec. One vector index per vector-bearing collection. The path
-# `embedding` is populated server-side by the MCP server when
-# VOYAGE_API_KEY is configured; otherwise the field is omitted and vector
-# search will not return results until embeddings are populated.
+# `embedding` is populated client-side with Vertex embeddings during the
+# seed step so Atlas Vector Search is usable immediately.
 # ---------------------------------------------------------------------------
 
 
@@ -183,7 +184,7 @@ def _vector_index_definition(num_dims: int) -> dict[str, Any]:
 def main() -> None:
     uri = os.environ["MONGODB_URI"]
     db_name = os.getenv("MONGODB_DB", "doctors_note")
-    num_dims = int(os.getenv("VOYAGE_EMBEDDING_DIM", "1024"))
+    num_dims = get_embedding_dimensions()
 
     client = MongoClient(uri)
     db = client[db_name]
@@ -198,7 +199,11 @@ def main() -> None:
         coll = db[coll_name]
 
         for doc in docs:
-            coll.update_one({"_id": doc["_id"]}, {"$set": doc}, upsert=True)
+            coll.update_one(
+                {"_id": doc["_id"]},
+                {"$set": _with_embedding(doc)},
+                upsert=True,
+            )
 
         try:
             coll.create_search_index(model=_vector_index_definition(num_dims))
@@ -211,12 +216,35 @@ def main() -> None:
         print(f"[seed_data] {coll_name}: {len(docs)} sample docs upserted")
 
     print(
-        "[seed_data] DONE. NOTE: vector search returns no hits until the "
-        "`embedding` field is populated. With VOYAGE_API_KEY set on the "
-        "MongoDB MCP server, switch ingestion to MCP `insert-many` to "
-        "auto-embed; this script intentionally stays raw-pymongo so the "
-        "schema bootstrap path is independent of the MCP runtime."
+        "[seed_data] DONE. Atlas documents now include client-side Vertex "
+        "embeddings, so vector search can run immediately once the Atlas "
+        "index finishes building."
     )
+
+
+def _with_embedding(doc: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a seed document with an `embedding` field attached."""
+
+    out = dict(doc)
+    out["embedding"] = embed_text(
+        _embedding_source_text(doc),
+        task_type="RETRIEVAL_DOCUMENT",
+        title=str(doc.get("title") or ""),
+    )
+    return out
+
+
+def _embedding_source_text(doc: dict[str, Any]) -> str:
+    """Compose the text chunk that should represent a seed document."""
+
+    parts = [
+        str(doc.get("title") or "").strip(),
+        str(doc.get("abstract") or "").strip(),
+        str(doc.get("text") or "").strip(),
+        str(doc.get("condition") or "").strip(),
+        str(doc.get("severity_tier") or "").strip(),
+    ]
+    return "\n\n".join(part for part in parts if part)
 
 
 if __name__ == "__main__":

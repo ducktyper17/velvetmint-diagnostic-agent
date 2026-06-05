@@ -1,0 +1,20 @@
+{
+  "patch_policies": [
+    {
+      "name": "tier0_human_gate",
+      "rule": "Never auto-deploy tier0 services. Open MR and require human approval."
+    },
+    {
+      "name": "internet_facing_review",
+      "rule": "Internet-facing services above risk score 74 require security review before deploy."
+    },
+    {
+      "name": "safe_auto_patch",
+      "rule": "Internal tier2 services may auto-deploy when pipeline passes and risk score <= 74."
+    }
+  ],
+  "incident_template": {
+    "title_format": "[{cve_id}] {incident_title}",
+    "labels": ["security", "zero-day", "blast-radius"]
+  }
+}

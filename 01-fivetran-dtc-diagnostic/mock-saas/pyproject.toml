@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "velvetmint-mock-saas"
+version = "0.1.0"
+description = "Mock SaaS API server that exposes the synthetic VelvetMint data over HTTP."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "fastapi>=0.115.0,<1.0",
+  "uvicorn[standard]>=0.32.0,<1.0",
+]
+
+[project.scripts]
+velvetmint-mock-saas = "mock_saas.main:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mock_saas"]

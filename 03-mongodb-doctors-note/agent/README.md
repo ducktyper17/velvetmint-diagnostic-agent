@@ -25,11 +25,8 @@ intended to run on Cloud Run.
 - Python 3.11+
 - A MongoDB Atlas project with at least one cluster (the free M0 tier
   is fine for the demo). Vector Search is available on M0 as of 2024.
-- A Voyage AI API key (`VOYAGE_API_KEY`). Voyage's `voyage-3-large` is
-  the current default; check whether the `voyage-medical` domain model
-  is generally available at build time and prefer it if so.
 - A Google Cloud project with Vertex AI enabled and a service account
-  that can call Gemini 3 models.
+  that can call Gemini and embedding models.
 - Node.js 20+ on the host **only if** running the MongoDB MCP server
   locally over stdio (the official server is distributed as an npm
   package; see the MongoDB docs). For Cloud Run we bundle the MCP
@@ -40,8 +37,8 @@ intended to run on Cloud Run.
 ```bash
 # from this directory
 cp .env.example .env
-# Fill in MONGODB_URI, MONGODB_DB, VOYAGE_API_KEY, GOOGLE_CLOUD_PROJECT,
-# GOOGLE_CLOUD_LOCATION, GEMINI_MODEL, MCP_SERVER_CMD.
+# Fill in MONGODB_URI, MONGODB_DB, GOOGLE_CLOUD_PROJECT,
+# GOOGLE_CLOUD_LOCATION, GEMINI_MODEL, VERTEX_EMBEDDING_MODEL, MCP_SERVER_CMD.
 
 python -m venv .venv
 source .venv/bin/activate
@@ -62,10 +59,8 @@ This script:
    do not already exist.
 3. Inserts a few sample documents into `literature`, `guidelines`, and
    `forum_posts`, all clearly labeled `is_sample: true`.
-4. Triggers Voyage AI embedding generation by going through the MCP
-   server's `insert-many` tool when `VOYAGE_API_KEY` is set; falls back
-   to a no-embedding insert otherwise (vector search will not work
-   until embeddings are present).
+4. Generates Vertex embeddings client-side and stores them directly in
+   Atlas so vector search works immediately after seeding.
 
 Re-running the script is safe: it upserts on a deterministic `_id`.
 
@@ -106,7 +101,7 @@ gcloud run deploy doctors-note \
   --source . \
   --region us-central1 \
   --service-account doctors-note-runtime@$PROJECT.iam.gserviceaccount.com \
-  --set-secrets MONGODB_URI=mongo-uri:latest,VOYAGE_API_KEY=voyage:latest
+  --set-secrets MONGODB_URI=mongo-uri:latest
 ```
 
 ## Operational notes
@@ -116,5 +111,5 @@ gcloud run deploy doctors-note \
   rather than silently retrying.
 - Vertex AI calls are not retried automatically; the responder is
   stateless and the client should retry idempotently.
-- We log the model versions of Gemini and Voyage on every response (in
+- We log the model versions of Gemini and the embedding model on every response (in
   `metadata`) so retroactive audit is possible without surfacing PHI.

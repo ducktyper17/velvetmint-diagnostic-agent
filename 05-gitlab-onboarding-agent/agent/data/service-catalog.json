@@ -1,0 +1,45 @@
+{
+  "group": "rapid-agent-labs",
+  "services": [
+    {
+      "service_name": "checkout-service",
+      "repo_path": "rapid-agent-labs/checkout-service",
+      "owner": "payments@rapid-agent.dev",
+      "tier": "tier0",
+      "internet_facing": true,
+      "cloud_run_service": "checkout-service"
+    },
+    {
+      "service_name": "user-service",
+      "repo_path": "rapid-agent-labs/user-service",
+      "owner": "identity@rapid-agent.dev",
+      "tier": "tier1",
+      "internet_facing": true,
+      "cloud_run_service": "user-service"
+    },
+    {
+      "service_name": "analytics-worker",
+      "repo_path": "rapid-agent-labs/analytics-worker",
+      "owner": "data@rapid-agent.dev",
+      "tier": "tier2",
+      "internet_facing": false,
+      "cloud_run_service": "analytics-worker"
+    },
+    {
+      "service_name": "marketing-site",
+      "repo_path": "rapid-agent-labs/marketing-site",
+      "owner": "growth@rapid-agent.dev",
+      "tier": "tier2",
+      "internet_facing": true,
+      "cloud_run_service": "marketing-site"
+    },
+    {
+      "service_name": "support-bff",
+      "repo_path": "rapid-agent-labs/support-bff",
+      "owner": "support-platform@rapid-agent.dev",
+      "tier": "tier1",
+      "internet_facing": false,
+      "cloud_run_service": "support-bff"
+    }
+  ]
+}

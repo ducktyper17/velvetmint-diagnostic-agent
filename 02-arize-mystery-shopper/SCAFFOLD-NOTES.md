@@ -1,63 +1,84 @@
-# SCAFFOLD-NOTES — Voice-AI Mystery Shopper (Arize backup track)
+# SCAFFOLD-NOTES — Self-Improving QA Agent (Arize primary track)
 
-Created May 23, 2026. This is the backup hackathon track scaffold. Primary submission is on the Fivetran track in `../01-fivetran-dtc-diagnostic/`. Depth target was roughly 60% of the primary; we landed close to that.
+Updated **May 26, 2026** (post-pivot). The prior "Voice-AI Mystery Shopper" scaffold was retargeted to "Self-Improving QA Agent" after re-reading the Arize partner page; the partner explicitly named the self-improvement loop as a bonus-criterion. See `../DECISION.md` for the full pivot rationale.
 
 ## What's complete
 
-- **Pitch and positioning docs.** `README.md`, `architecture.md`, `demo-script.md` are submission-ready first drafts. Demo script is timed to 2:55 with a buffer; the cold open and payoff beats are locked, the architecture document explains the load-bearing role of Phoenix at three different layers (datasets, experiments, prompts).
-- **Python package skeleton.** `agent/pyproject.toml` lists every dependency we will need with conservative lower-bound pins and `TODO: confirm` markers on the four packages whose 2026 versioning is uncertain (`google-cloud-aiplatform`, `arize-phoenix`, `arize-phoenix-evals`, `mcp`).
-- **Configuration surface.** `agent/.env.example` documents twelve environment variables grouped by concern (Vertex AI, Phoenix, MCP, audit runtime, app).
-- **HTTP surface.** `agent/main.py` has the three endpoints the demo needs (`POST /audit`, `GET /audit/{id}`, `GET /audit/{id}/report`), a Pydantic-validated request body, and a background-task executor wired into the lifespan handler.
-- **Scenario library.** `agent/scenarios.py` ships exactly the ten scenarios specified, each with a real persona, opening message, anchor phrases, stop conditions, and primary dimensions. The dataclass schema is ready to round-trip through `add-dataset-examples` in Phoenix.
-- **Judge prompts.** `agent/prompts.py` defines six versioned judge prompts (empathy, accuracy, escalation, bias, hallucination, brand voice). Each has an explicit 0 / 0.5 / 1.0 rubric and at least one explicit failure-mode warning (e.g., "do NOT reward sycophancy" in empathy, "saying I don't know is not a hallucination" in hallucination). Prompts are designed to be upserted into Phoenix unchanged.
-- **Judge runner shape.** `agent/judge.py` runs all six judges per scenario, returns a structured `JudgeReport`, and exposes the four integration points where real Phoenix / Vertex AI calls slot in. Stubs are deterministic so the FastAPI app is end-to-end exercisable today without any external credentials.
+- **Strategy.** `../DECISION.md` and `../README.md` updated. Arize promoted to primary; Fivetran kept as backup + stretch second submission.
+- **Concept docs.** `README.md`, `architecture.md`, `demo-script.md`, `build-plan.md` are first-draft submission-ready. Demo script is timed to 2:55 with a buffer; the architecture document explains the load-bearing role of Phoenix at five layers (datasets, experiments, prompts, traces/sessions, annotations).
+- **Stack alignment with the canonical Arize reference.** `pyproject.toml`, `.env.example`, and `Makefile` mirror the [Arize gemini-hackathon repo](https://github.com/Arize-ai/gemini-hackathon) (Google ADK + `openinference-instrumentation-google-adk` + `phoenix.otel.register(auto_instrument=True)` + `arize-phoenix>=7.0` + Apache-2.0).
+- **Phoenix tracer** wired in `qa_agent/instrumentation.py`. Includes a defensive warning for the Phoenix Cloud endpoint format gotcha (must include `/s/<space>`).
+- **ADK QA agent** with three FunctionTools and a Phoenix MCP `McpToolset`. `qa_agent/agent.py` is the load-bearing piece — it's what makes "agent introspects its own traces at runtime via MCP" literally true.
+- **QA agent system instruction** in `qa_agent/prompt.py` — six-phase, opinionated, written to drive the demo's payoff. This is the most consequential prompt in the repo.
+- **Subject Under Test (SUT)** in `sut/agent.py` + `sut/prompt.py` + `sut/tools.py`. Three deliberate pathologies (hallucinated 90-day price-match, dropped Spanish code-switching, fraud-resolved-in-channel) flagged with `# FLAW` markers.
+- **Three QA tools** (`run_scenario`, `cluster_failures`, `mutate_sut_prompt`) with the right shapes, deterministic stubs so the loop is exercisable end-to-end, and explicit TODO markers at each real-call site.
+- **CLI + FastAPI surface** in `qa_agent/main.py`. Matches the pattern from the canonical reference repo's `agent/main.py`.
+- **Seed script** in `scripts/seed_phoenix.py` (manifest level — wire-up TODO is Day 2).
+- **Six judge prompts** preserved from the prior Mystery Shopper scaffold in `judge_prompts.py` (renamed from `prompts.py`). Each has explicit 0/0.5/1.0 rubric + at least one failure-mode warning.
+- **Ten seed scenarios** preserved in `scenarios.py`. Three of them now directly map to the SUT's planted flaws (`hallucination-bait-policy`, `accent-spanish-en`, `escalation-fraud`).
 
-## What's stubbed
+## What's stubbed (the TODO sites)
 
-These are the explicit "TODO" sites the real build will fill in. Each is small and well-scoped, which is the whole point of having the scaffold:
+These are deliberate. The scaffold lets the QA agent's full six-phase loop run end-to-end against deterministic stubs so the integration shape is locked in before we burn Gemini calls.
 
-1. **Phoenix OTel tracer registration** at app startup (`main.py` lifespan handler). One function call once we confirm the `arize-phoenix` import path.
-2. **Conversation orchestration** in `_run_audit`. Today it just calls the judge with no transcript; the real version drives Gemini 3 as the customer, calls a target adapter, loops until `stop_when` triggers.
-3. **Target adapter layer.** No adapter implementations yet. MVP needs only the HTTPS-chat adapter; WebSocket and voice are post-MVP.
-4. **Phoenix MCP client** for `get-latest-prompt` and `add-experiment-row`. The shape is sketched in `judge.py` comments; the actual `mcp.ClientSession` boot is one function we will share between `main.py` and `judge.py`.
-5. **Phoenix dataset seeding.** A `scripts/seed_dataset.py` that takes `DEFAULT_SCENARIO_SET` and posts it to Phoenix via `add-dataset-examples`. One-time job.
-6. **Report renderer.** The data structure (`JudgeReport`) is fixed; an HTML template plus a per-target leaderboard view is needed before the demo.
-7. **Dockerfile + Cloud Run deploy.** README documents the intent but neither file ships yet.
-8. **Frontend.** No frontend in this scaffold at all. The demo can run against the JSON API plus a hand-built static HTML report for the recording, or we can add a thin React page in a day if there's time.
+| # | Site | What it does today | What it does in the real build |
+|---|---|---|---|
+| 1 | `qa_agent/tools/scenarios.py` TODO(1) | reads SUT prompt from `sut/prompt.py` directly | resolves SUT prompt from Phoenix by version id via `get-prompt-version` |
+| 2 | `qa_agent/tools/scenarios.py` TODO(2) | `_stub_drive_conversation` returns a fixed 2-turn transcript | boots ADK runner for SUT, drives with Gemini 2.5 Flash playing the customer, traces every turn |
+| 3 | `qa_agent/tools/scenarios.py` TODO(3) | `_stub_judge` returns deterministic scores keyed off `primary_dimensions` | calls Gemini 2.5 with each of the six judge prompts (resolved via `get-latest-prompt`), N=3 replicas |
+| 4 | `qa_agent/tools/cluster.py` TODO | `_stub_cluster` groups by dimension | one Gemini 2.5 Flash call with the strict cluster prompt |
+| 5 | `qa_agent/tools/mutate.py` TODO | `_stub_mutate` appends a hardcoded sentence | one Gemini 2.5 Pro call with the strict mutation prompt + diff validation |
+| 6 | `qa_agent/main.py` `_run_audit` | writes ADK events to in-memory job state | parses the final agent message into the structured delta-report schema |
+| 7 | `scripts/seed_phoenix.py` | prints a manifest | calls Phoenix Python client (or MCP) to upsert judge prompts, the SUT seed prompt, and the dataset examples |
+| 8 | frontend | not scaffolded yet | Next.js + shadcn/ui + Tailwind; SSE live-thinking + embedded Phoenix iframe + final delta table |
+| 9 | `infra/Dockerfile` | not scaffolded yet | python:3.12-slim + Node 18+ (for npx Phoenix MCP) |
 
 ## Estimated remaining work to demo-able state
 
-Person-hours, assuming Gemini 3 access is unblocked and a working Phoenix Cloud account is in hand. "Demo-able" means the recorded demo in `demo-script.md` runs end-to-end against four real third-party AIs, not just mocks.
+Person-hours, assuming Phoenix Cloud account is in hand and Vertex AI is unblocked. "Demo-able" = the 3-minute demo in `demo-script.md` runs end-to-end against a live Phoenix Cloud workspace.
 
 | Workstream | Hours |
 |---|---|
-| Phoenix tracer wiring + smoke test trace round-trip | 2 |
-| MCP client bootstrap + dataset/experiment/prompt helpers | 4 |
-| Seed dataset script (push 50 scenarios into Phoenix) | 2 |
-| Generate scenarios 11-50 (curate, write, review) | 6 |
-| Gemini 3 customer-role orchestrator with `stop_when` loop | 6 |
-| HTTPS chat target adapter + 4 target-specific config files | 4 |
-| Real judge calls replacing the stubs in `judge.py` | 3 |
-| Report renderer (HTML + leaderboard logic) | 6 |
-| Dockerfile, Cloud Run deploy, secret manager wiring | 3 |
-| Pre-recorded "live" audit run + caching layer for the demo | 4 |
+| Phoenix Cloud account, .env, smoke trace | 1 |
+| Phoenix MCP toolset returning real data inside ADK | 3 |
+| Real `run_scenario` (ADK driver + SUT loop) | 5 |
+| Real Gemini judges (Gemini-only, Phoenix experiment writes, replicas) | 5 |
+| Cluster + mutate real Gemini calls | 3 |
+| Scenario set expansion from 10 → 50 in Phoenix | 4 |
+| End-to-end loop with measurable delta on a real run | 4 |
+| Next.js frontend (live thinking + embedded Phoenix + delta table) | 10 |
+| Dockerfile + Cloud Run deploy + Secret Manager binding | 3 |
+| Pre-recorded "live" audit run + caching layer for the demo | 3 |
 | Demo polish, narration, video edit | 6 |
-| Buffer for one full day of unknowns | 8 |
-| **Total** | **~54 hours** |
+| Devpost writeup + Apache-2.0 LICENSE check | 2 |
+| Buffer (one full day of unknowns) | 8 |
+| **Total** | **~57 hours** |
 
-For comparison the primary Fivetran scaffold is sized at roughly 90 person-hours from its scaffold state. The lighter scope here is intentional and tracks the original spec.
+For comparison the original Mystery Shopper scaffold sized this at ~54 hours but missed the self-improvement loop entirely. We added ~7 hours of self-improvement work and traded ~4 hours of voice/multi-target adapter work for it. Net ~3 hours and a far stronger thesis.
 
-## Top three risks
+## Top three risks (refreshed)
 
-1. **Phoenix MCP-vs-SDK boundary turns out wrong.** The scaffold uses MCP for control-plane operations (datasets, experiments, prompts) and the Python SDK directly for OTel tracing. If the 2026 MCP package can't actually drive `add-experiment-row` end-to-end, we have to fall back to the SDK for experiments and the demo's "everything is in Phoenix" narrative weakens. Mitigation: spike the MCP path on day 1 of any pivot, before scenario authoring. Time at risk: ~6 hours of judge-runner work.
-2. **Rate-limited or blocked by target AIs.** Real hotel-chain chatbots may block automated traffic, return generic fallbacks, or simply hit rate limits halfway through the 50-scenario run. The demo specifically promises a head-to-head between Marriott / Hilton / Hyatt / IHG; if even one of them blocks us, the leaderboard story collapses. Mitigation: use targets we can guarantee access to (open-source bots, our own deployed reference bot, public demo endpoints from each vendor) and frame the four hotel chains as a synthetic stand-in if needed. The scoring methodology is the product; the specific targets are dressing.
-3. **Judge variance is too high to give clean rankings.** LLM-as-judge can be noisy enough that a leaderboard reorders between runs, which destroys the demo's credibility. Mitigation: run each judge call N=3 times and report median+IQR; pre-compute variance per dimension across all 200 conversations in the cached demo run and surface it in the report so reviewers see we measured it. This adds 3x judge cost but the audit budget can absorb it.
+1. **Phoenix MCP `upsert-prompt` via `npx` subprocess in Cloud Run.** ADK's `McpToolset` spawns `@arizeai/phoenix-mcp@latest` over stdio. Cloud Run can run sidecar processes but spawning `npx` at request time is unusual; cold-start latency could be brutal. Mitigation: pin the package and pre-warm in the container image, OR fall back to the Phoenix REST API for `upsert-prompt` while keeping MCP for read-mode tools. The demo's "meaningful MCP" criterion is still hit via `list-traces`, `get-spans`, etc. Time at risk: ~3 hours of integration work.
 
-## Decision gates
+2. **Judge variance reorders the leaderboard.** Same risk the original scaffold flagged; even worse here because the demo's punch comes from a clean before/after delta. If post-fix scores are within IQR of baseline, the demo flops. Mitigation: N=3 replicas, report median + IQR, target the prompt fix on the *most* stable dimension (hallucination, in our internal tests). If we have time on Day 8 we run 200 baseline judge calls across the 50 scenarios and pre-compute per-dimension variance so we know which dimension to feature in the demo.
 
-Per `../DECISION.md`, we evaluate pivoting on Day 4 (May 27). Two scenarios trigger this scaffold becoming the actual submission:
+3. **Self-improvement actually fails to improve.** The QA agent's mutation could break a different dimension while fixing the targeted one. Mitigation: the `mutate_sut_prompt` tool enforces *additive-only* edits, and the QA agent's instruction tells it to flag any dimension that regresses > 0.05. We can show this honestly in the demo ("hallucination -23 points, empathy unchanged") rather than pretending every fix is free.
 
-- Fivetran free trial proves too restrictive to demo six connectors realistically.
-- Gemini Enterprise Agent Builder access is blocked through Day 3 and Vertex AI direct usage isn't enough for the Fivetran demo's full loop.
+## Decision gates (recap from build-plan)
 
-If we pivot, day 1 of the pivot opens by running the spike in risk #1 above before any other work.
+- **End of Day 5 (Sat May 30)**: Tech self-score must be ≥ 6 with a real baseline experiment in Phoenix. If not, drop multi-cycle stretch, lock single-cycle for the demo.
+- **End of Day 10 (Thu Jun 4)**: All four self-scores must be ≥ 7. If any are below, cut frontend polish first, demo recording polish second.
+- **End of Day 13 (Sun Jun 7)**: demo recording must be in the can. After this we don't add features.
+
+## What we kept from the prior scaffold
+
+- **The six judge prompts** (`judge_prompts.py`). These are 80% of the scoring methodology; rewriting them would be waste.
+- **The ten seed scenarios** (`scenarios.py`). Three map directly to the SUT's planted pathologies; the other seven cover dimensions we still score.
+- **The framing of LLM-as-judge variance as a first-class concern**, not a footnote.
+- **Apache-2.0 licensing** and the "Phoenix is the canonical record" architectural posture.
+
+## What we removed
+
+- **The Python `mcp.ClientSession` boot path.** It hides MCP behind Python code; ADK's `McpToolset` exposes it to the agent as first-class tools, which is the correct pattern for the partner's criterion of "the agent can introspect its own observability data at runtime".
+- **The target-adapter layer** (HTTPS chat, voice, WebSocket adapters). We audit a single in-repo Gemini SUT now; no third-party endpoint dependency, no rate-limit risk.
+- **The "Marriott/Hilton/Hyatt/IHG" framing in the demo.** Replaced with VelvetMint (our own fake DTC brand) so the demo is reproducible by reviewers and has zero TOS exposure.

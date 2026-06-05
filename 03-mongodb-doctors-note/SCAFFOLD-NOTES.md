@@ -1,10 +1,10 @@
-# Scaffold notes — Doctor's Note Decoder (backup)
+# Scaffold notes — Doctor's Note Decoder
 
 > What is real, what is stubbed, what we have not started, how long the
-> remaining work is, and where the project could break. This is a
-> backup-tier scaffold — roughly 60% of the depth we'd put into the
-> primary Fivetran submission. The primary lives in
-> `../01-fivetran-dtc-diagnostic/`.
+> remaining work is, and where the project could break. This is now the
+> active MongoDB path, so the goal is not "backup completeness" anymore;
+> it is to get to a submission-ready demo quickly without violating the
+> Google-only AI rule.
 
 Last updated: 2026-05-23.
 
@@ -37,8 +37,8 @@ Last updated: 2026-05-23.
   with conservative minimum versions; anything we're not 100% sure
   about at the time of writing is marked `TODO confirm` rather than
   guessed.
-- **Env contract**: `.env.example` covers MongoDB, MCP, Voyage, Vertex,
-  and runtime knobs. `REQUIRE_DISCLAIMER_FILE` defaults on.
+- **Env contract**: `.env.example` covers MongoDB, MCP, Vertex, and
+  runtime knobs. `REQUIRE_DISCLAIMER_FILE` defaults on.
 
 ## What is stubbed
 
@@ -54,12 +54,10 @@ Last updated: 2026-05-23.
   runs and produces correct aggregations; the dispatch to
   `session.call_tool("aggregate", ...)` is a TODO with the exact call
   shape commented inline.
-- **Voyage auto-embedding**. We rely on the MongoDB MCP server's
-  documented behavior: when `VOYAGE_API_KEY` is configured on the MCP
-  server, `insert-many` auto-embeds text fields. The seed script
-  intentionally inserts via raw pymongo (schema bootstrap path); the
-  request-path inserts in `/vault/save` are stubbed and will use MCP
-  once wired.
+- **Embedding generation path**. We need a small helper that calls
+  Vertex AI text embeddings for corpus chunks and query summaries, then
+  writes those vectors into Atlas. This replaces the earlier Voyage-based
+  sketch so the project stays within the hackathon rules.
 - **`/vault/save` endpoint**. Returns a stub response. No real auth.
 - **Frontend**. None. The demo uses curl for now; a minimal upload
   page is post-pivot work.
@@ -77,12 +75,13 @@ already provisioned with billing on:
 | Wire `extractor._gemini_extract` to Vertex AI (`google-cloud-aiplatform`), include real PDF/image path tests | 3 |
 | Wire MCP subprocess in `main.lifespan` (start, healthcheck, teardown); add a thin wrapper around `session.call_tool("aggregate", ...)` | 4 |
 | Wire `responder.respond` to Vertex AI with structured output (`response_schema=DecodedReport`), include the "soft fallback with disclaimer attached" branch on validation failure | 3 |
-| Seed a real-feeling knowledge base: ~30 PubMed-style abstracts across 4 conditions, ~6 guideline excerpts, ~10 forum-shaped fabricated entries (all clearly labeled), verify Voyage embeddings populate via MCP `insert-many` | 4 |
+| Add a small Vertex-embedding helper for corpus and query vectors; verify Atlas index dimensions match | 2 |
+| Seed a real-feeling knowledge base: ~30 PubMed-style abstracts across 4 conditions, ~6 guideline excerpts, ~10 forum-shaped fabricated entries (all clearly labeled), verify vectors are written correctly | 4 |
 | Minimal HTML upload page + result card; copy from the demo script | 2 |
 | Cloud Run deploy + Secret Manager wiring + smoke test against Atlas | 3 |
 | Demo video recording, editing, captions, disclaimer overlay | 4 |
 | Buffer (you will lose at least this much to Vertex quotas, Atlas index propagation latency, and MCP version drift) | 3 |
-| **Total** | **~26 hours** |
+| **Total** | **~28 hours** |
 
 This is consistent with a 3-day sprint for one person, or one long
 weekend for two people splitting on agent vs. demo polish.
@@ -120,7 +119,7 @@ issue and a regulatory one. Specific failure modes:
 We should not pivot to this project unless we are willing to commit a
 specific person to owning the framing review end-to-end.
 
-### 2. MCP server runtime risk
+### 2. MCP server + embedding wiring risk
 
 The official MongoDB MCP server is young (relative to the MongoDB
 driver itself). The risks we are watching:
@@ -130,12 +129,11 @@ driver itself). The risks we are watching:
   pulls latest, which is fine for the demo but unsafe for production.
   **Mitigation for the demo:** pin to a specific tag in the Cloud Run
   Dockerfile.
-- Auto-embedding via Voyage in `insert-many` is configured server-side,
-  not in our code. If the env or the server flags are wrong, ingestion
-  succeeds without embeddings and vector search silently returns
-  nothing. **Mitigation:** the seed script prints a loud reminder; we
-  should add an end-of-seed assertion that at least one document has
-  a non-null `embedding`.
+- The Atlas index dimension must match the Vertex embedding model we
+  actually use. If they drift, ingestion succeeds but `$vectorSearch`
+  fails or returns nothing useful. **Mitigation:** centralize the model
+  name and vector dimension in config; assert dimension alignment during
+  seed and service startup.
 - Streamable HTTP vs. stdio transport: we have planned for stdio
   inside a Cloud Run container. If we end up needing HTTP transport
   for any reason (e.g. to share the MCP server across services),
@@ -152,7 +150,8 @@ Note Decoder differentiates on:
   hand-stitched ANN + filter combo.
 - **Domain framing**, which is also the legal risk above. Most
   competitors will not have a `LEGAL-DISCLAIMER.md` file at all.
-- **Auto-embedding via MCP**, not a separate embedding service.
+- **Google-only AI compliance**, which most quick MongoDB demos will
+  overlook if they copy-paste a third-party embedding stack.
 
 These differentiators are real but not flashy. If we pivot here, we
 must invest the demo-video time to *show* the aggregation pipeline on
@@ -161,7 +160,7 @@ visible to a judge watching 60 of these in a row.
 
 ## What we would do next if we pivoted to this project
 
-1. Day 1: wire Vertex AI + MCP + Voyage end-to-end against the stubs
+1. Day 1: wire Vertex AI embeddings + MongoDB MCP end-to-end against the stubs
    above; ship a real `/decode` against the seeded data.
 2. Day 2: expand the seed dataset to 4 conditions × ~10 docs each
    (thyroid_nodule, lung_nodule, breast_mass, basic CBC abnormality);
