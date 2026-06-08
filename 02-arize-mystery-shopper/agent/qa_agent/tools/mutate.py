@@ -35,14 +35,23 @@ You are improving a customer-support AI's system prompt. The current system
 prompt is below, followed by a description of the failure cluster you must
 address.
 
-Constraints:
-1. The improved prompt must add 1-2 sentences only. No edits to existing
-   lines.
-2. The added sentence(s) must reference the cluster's root cause concretely
-   (e.g. "never invent policies that are not in your tools" rather than
-   "be more careful").
-3. Do not weaken any existing instruction.
-4. Do not address more than one cluster. Pick the strongest signal.
+Constraints (the diff must be auditable and safety-bounded):
+
+1. You may remove one or more lines that begin with "# FLAW(" — these are
+   pre-tagged known-bad rules that should be replaced. Remove ONLY the
+   FLAW lines whose label is directly relevant to the cluster you are
+   addressing. List each removed line VERBATIM in `removed_flaw_lines`.
+
+2. You may append 1-2 sentences of new instruction at the end.
+
+3. You may NOT edit, reorder, or rewrite any line that is not a
+   "# FLAW(...)" line. Any other change is rejected.
+
+4. The appended sentence(s) must address the cluster's root cause
+   concretely (e.g. "never invent policies that are not in your tools",
+   not "be more careful").
+
+5. Address one cluster per cycle. Pick the strongest signal.
 
 Current system prompt:
 ---
@@ -57,11 +66,13 @@ Failure cluster:
 
 Output a JSON object: {{
   "rationale": "<one paragraph: why this edit, why now>",
-  "appended": "<the exact text you are appending>",
+  "removed_flaw_lines": ["<exact line text>", ...],
+  "appended": "<the exact text you are appending, or empty string if removal-only>",
   "new_prompt": "<the full updated prompt>"
 }}
 
-No other text.
+`removed_flaw_lines` may be an empty list (append-only) or a list of one or
+more verbatim lines starting with "# FLAW(". Output no other text.
 """
 
 
@@ -105,38 +116,102 @@ def mutate_sut_prompt(
     rationale = str(result.get("rationale", "")).strip()
     appended = str(result.get("appended", "")).strip()
     new_prompt = str(result.get("new_prompt", "")).strip()
+    removed_raw = result.get("removed_flaw_lines") or []
+    removed_lines: list[str] = (
+        [str(line).strip() for line in removed_raw if str(line).strip()]
+        if isinstance(removed_raw, list)
+        else []
+    )
 
-    if not appended or not new_prompt:
-        return {"error": "mutation response missing 'appended' or 'new_prompt'."}
+    if not new_prompt:
+        return {"error": "mutation response missing 'new_prompt'."}
+    if not appended and not removed_lines:
+        return {"error": "mutation must either remove a FLAW line or append text."}
 
-    # Enforce the additive-only contract. The new prompt MUST start with
-    # the original verbatim (modulo trailing whitespace). If the model
-    # rewrote something, reject — we cannot reason about a free-form
-    # rewrite during the demo.
-    if not _is_additive(current_prompt, new_prompt):
+    # Validate: every removed line must start with "# FLAW(" so the agent
+    # cannot strip arbitrary rules under cover of the cluster narrative.
+    for line in removed_lines:
+        stripped = line.lstrip("- ").strip()
+        if not stripped.startswith("# FLAW("):
+            return {
+                "error": (
+                    f"removed line must start with '# FLAW(' (after bullet/whitespace); "
+                    f"got: {line!r}"
+                )
+            }
+
+    # Reconstruct the expected new prompt from current minus removed plus
+    # appended. If Gemini's `new_prompt` doesn't match within whitespace
+    # tolerance, coerce to the reconstructed version — the structural diff
+    # is what we audit, not the model's free-form text.
+    reconstructed = _apply_diff(
+        current=current_prompt,
+        removed_lines=removed_lines,
+        appended=appended,
+    )
+    if _normalize(new_prompt) != _normalize(reconstructed):
         _log.warning(
-            "mutation was not additive; coercing to current_prompt + appended"
+            "mutation new_prompt diverges from reconstructed diff; coercing"
         )
-        new_prompt = current_prompt.rstrip() + "\n\n" + appended + "\n"
+        new_prompt = reconstructed
 
-    # Cap the appended text at 2 short paragraphs to keep the diff legible.
+    # Cap the appended text length so diffs stay legible.
     if len(appended) > 600:
         return {"error": f"appended rule too long ({len(appended)} chars); reject."}
 
     return {
         "rationale": rationale or "(model returned no rationale)",
+        "removed_flaw_lines": removed_lines,
         "appended": appended,
         "new_prompt": new_prompt,
         "parent_prompt_hash": _stable_hash(current_prompt),
     }
 
 
-def _is_additive(current: str, candidate: str) -> bool:
-    """True iff candidate starts with current (trailing whitespace tolerated)."""
+def _apply_diff(
+    *,
+    current: str,
+    removed_lines: list[str],
+    appended: str,
+) -> str:
+    """Apply a remove-FLAW-lines-then-append diff to the current prompt.
 
-    return candidate.lstrip().startswith(current.strip()) or candidate.startswith(
-        current.rstrip()
-    )
+    Matching is tolerant to leading bullet markers and whitespace — the SUT
+    prompt's FLAW lines look like ``- # FLAW(...)`` (bulleted) but the
+    mutation model sometimes returns the unbulleted form ``# FLAW(...)`` in
+    `removed_flaw_lines`. We normalize both sides before comparing.
+    """
+
+    removed_strip = {_normalize_for_match(line) for line in removed_lines}
+    keep: list[str] = []
+    for line in current.split("\n"):
+        if _normalize_for_match(line) in removed_strip:
+            continue
+        keep.append(line)
+    rebuilt = "\n".join(keep).rstrip()
+    if appended:
+        rebuilt = rebuilt + "\n" + appended.strip() + "\n"
+    return rebuilt
+
+
+def _normalize_for_match(line: str) -> str:
+    """Strip leading bullet markers and whitespace so line-comparison is forgiving.
+
+    The SUT prompt uses ``- # FLAW(...)`` (markdown bullet). Gemini sometimes
+    drops the bullet when reporting `removed_flaw_lines`. This normalizer
+    aligns both sides.
+    """
+
+    s = line.strip()
+    while s.startswith("- "):
+        s = s[2:].strip()
+    return s
+
+
+def _normalize(text: str) -> str:
+    """Collapse whitespace differences for diff comparisons."""
+
+    return "\n".join(line.rstrip() for line in text.strip().split("\n"))
 
 
 def _stable_hash(text: str) -> str:
