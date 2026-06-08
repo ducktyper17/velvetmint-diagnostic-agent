@@ -180,76 +180,137 @@ async def main() -> None:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     audit_job_id = os.environ.get("AUDIT_JOB_ID") or f"loop-{os.getpid()}"
+    num_cycles = int(os.environ.get("AUDIT_NUM_CYCLES", "2"))
 
     print("=" * 60)
-    print(f"Self-Improving QA Agent — run_loop ({audit_job_id})")
-    print(f"  scenarios: {len(DEFAULT_SCENARIO_SET)}")
+    print(f"Self-Improving QA Agent — multi-cycle audit ({audit_job_id})")
+    print(f"  scenarios:      {len(DEFAULT_SCENARIO_SET)}")
     print(f"  judge replicas: {os.environ.get('AUDIT_JUDGE_REPLICAS', '3')}")
+    print(f"  cycles:         {num_cycles}")
     print("=" * 60)
 
-    # Phase 1: baseline
-    print("\n[Phase 1] Baseline run")
+    # Run sequence: v1 (original) -> mutate -> v2 (cycle 1 fix) -> mutate -> v3 (cycle 2 fix) ...
+    runs: list[dict[str, Any]] = []
+    mutations: list[dict[str, Any]] = []
+    current_prompt = VELVETMINT_SUT_INSTRUCTION
+
+    # Initial baseline run (v1, original SUT prompt)
+    print("\n[v1] Baseline run with original SUT prompt")
     baseline = await _run_all("baseline", audit_job_id)
+    runs.append({"label": "v1", "results": baseline, "prompt": current_prompt})
     (OUT_DIR / "baseline.json").write_text(json.dumps(baseline, indent=2))
 
-    # Phase 2-3: introspect + cluster
-    print("\n[Phase 2-3] Cluster failures")
-    rationales = _failing_rationales(baseline)
-    cluster_out = cluster_failures(rationales)
-    clusters = cluster_out.get("clusters", [])
-    print(f"  found {len(clusters)} cluster(s); top counts: " + ", ".join(
-        f"{c.get('name', '?')}={c.get('count', 0)}" for c in clusters
-    ))
-    (OUT_DIR / "clusters.json").write_text(json.dumps(cluster_out, indent=2))
+    for cycle in range(1, num_cycles + 1):
+        print(f"\n=== Cycle {cycle} ===")
+        prev = runs[-1]["results"]
+        rationales = _failing_rationales(prev)
+        print(f"  failing rationales: {len(rationales)}")
+        if not rationales:
+            print("  No failures left to address — stopping early.")
+            break
 
-    if not clusters:
-        print("\nNo failures found in baseline. The SUT is already perfect (?) — stopping.")
-        return
+        cluster_out = cluster_failures(rationales)
+        clusters = cluster_out.get("clusters", [])
+        if not clusters:
+            print("  Cluster step returned no clusters — stopping.")
+            break
+        top = clusters[0]
+        print(f"  top cluster: {top.get('name', '?')} (count={top.get('count', 0)}, "
+              f"dims={top.get('dimensions_affected', [])})")
+        (OUT_DIR / f"clusters-cycle{cycle}.json").write_text(json.dumps(cluster_out, indent=2))
 
-    # Phase 4: mutate
-    print("\n[Phase 4] Mutate SUT prompt")
-    top_cluster = clusters[0]
-    mutation = mutate_sut_prompt(cluster=top_cluster, current_prompt=VELVETMINT_SUT_INSTRUCTION)
-    if mutation.get("error"):
-        print(f"  mutate failed: {mutation['error']}")
-        return
-    print(f"  rationale: {mutation['rationale'][:160]}")
-    print(f"  appended:  {mutation['appended'][:160]}")
-    (OUT_DIR / "mutation.json").write_text(json.dumps(mutation, indent=2))
+        mutation = mutate_sut_prompt(cluster=top, current_prompt=current_prompt)
+        if mutation.get("error"):
+            print(f"  mutate failed: {mutation['error']} — stopping.")
+            break
+        print(f"  appended: {mutation['appended'][:140]}")
+        mutations.append({"cycle": cycle, "cluster": top, "mutation": mutation})
+        (OUT_DIR / f"mutation-cycle{cycle}.json").write_text(json.dumps(mutation, indent=2))
 
-    # Phase 5: activate new prompt for subsequent runs
-    new_prompt = mutation["new_prompt"]
-    os.environ["ACTIVE_SUT_PROMPT_TEXT"] = new_prompt
+        current_prompt = mutation["new_prompt"]
+        os.environ["ACTIVE_SUT_PROMPT_TEXT"] = current_prompt
 
-    # Phase 6: post-fix run
-    print("\n[Phase 6] Post-fix run")
-    post_fix = await _run_all("post-fix", audit_job_id)
-    (OUT_DIR / "post_fix.json").write_text(json.dumps(post_fix, indent=2))
+        version_label = f"v{cycle + 1}-cycle{cycle}-fix"
+        print(f"\n[v{cycle + 1}] Re-run scenarios with cycle-{cycle} fix applied")
+        cycle_results = await _run_all(version_label, audit_job_id)
+        runs.append({"label": f"v{cycle + 1}", "results": cycle_results, "prompt": current_prompt})
+        (OUT_DIR / f"v{cycle + 1}.json").write_text(json.dumps(cycle_results, indent=2))
 
-    # Phase 7: delta
-    print("\n[Phase 7] Delta report")
-    delta_per_dim = _compute_delta(baseline, post_fix)
+    # Per-cycle deltas + overall delta
+    per_cycle_deltas: list[dict[str, Any]] = []
+    for i in range(1, len(runs)):
+        d = _compute_delta(runs[i - 1]["results"], runs[i]["results"])
+        per_cycle_deltas.append({
+            "from": runs[i - 1]["label"],
+            "to":   runs[i]["label"],
+            "delta": d,
+        })
+    overall_delta = _compute_delta(runs[0]["results"], runs[-1]["results"])
+
+    # Build report; preserve legacy single-cycle keys so the frontend / API
+    # remain backward-compatible.
+    legacy_top_cluster = mutations[0]["cluster"] if mutations else None
+    legacy_mutation = mutations[0]["mutation"] if mutations else None
+
     report = {
         "audit_job_id": audit_job_id,
         "scenario_count": len(DEFAULT_SCENARIO_SET),
-        "top_cluster": top_cluster,
-        "mutation": mutation,
-        "delta": delta_per_dim,
-        "baseline_pass_rate": _pass_rate(baseline),
-        "post_fix_pass_rate": _pass_rate(post_fix),
+        "num_cycles_run": len(mutations),
+
+        # Multi-cycle keys
+        "mutations":        mutations,
+        "per_cycle_deltas": per_cycle_deltas,
+        "overall_delta":    overall_delta,
+        "pass_rates":       {r["label"]: _pass_rate(r["results"]) for r in runs},
+        "run_labels":       [r["label"] for r in runs],
+
+        # Legacy single-cycle keys (frontend / API still consume these)
+        "top_cluster":        legacy_top_cluster,
+        "mutation":           legacy_mutation,
+        "delta":              overall_delta,
+        "baseline_pass_rate": _pass_rate(runs[0]["results"]) if runs else 0.0,
+        "post_fix_pass_rate": _pass_rate(runs[-1]["results"]) if runs else 0.0,
     }
+    # Also write a legacy post_fix.json pointing at the final run
+    if runs:
+        (OUT_DIR / "post_fix.json").write_text(json.dumps(runs[-1]["results"], indent=2))
     (OUT_DIR / "delta_report.json").write_text(json.dumps(report, indent=2))
 
-    print("\nResult:")
-    print(f"  baseline pass rate : {report['baseline_pass_rate']:.0%}")
-    print(f"  post-fix pass rate : {report['post_fix_pass_rate']:.0%}")
+    # Print summary
+    print("\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    print("\nPass rates per version:")
+    for label, rate in report["pass_rates"].items():
+        print(f"  {label}: {rate:.0%}")
+
+    for cycle_delta in per_cycle_deltas:
+        print(f"\nDelta {cycle_delta['from']} -> {cycle_delta['to']}:")
+        _print_delta_block(cycle_delta["delta"])
+
+    if len(runs) > 2:
+        print(f"\nOverall delta {runs[0]['label']} -> {runs[-1]['label']}:")
+        _print_delta_block(overall_delta)
+
+
+def _print_delta_block(delta_per_dim: dict[str, dict[str, Any]]) -> None:
+    """Print a per-dimension delta block, marking improvements with ✓.
+
+    Hallucination is inverted (higher = worse), so a NEGATIVE delta is an
+    improvement there. All other dimensions are normal (positive = improvement).
+    """
     for dim, d in delta_per_dim.items():
-        if d["delta"] is None:
+        if d.get("delta") is None:
             continue
-        arrow = "↑" if d["delta"] > 0 else ("↓" if d["delta"] < 0 else "·")
+        delta = d["delta"]
+        is_inverted = dim == "hallucination"
+        improved = (delta < 0 if is_inverted else delta > 0) and abs(delta) > 0.001
+        arrow = "↑" if delta > 0 else ("↓" if delta < 0 else "·")
+        mark = "  ✓" if improved else ""
         print(
-            f"  {dim:<14} {arrow} delta={d['delta']:+.3f} "
-            f"({d['baseline_mean']:.2f} → {d['post_fix_mean']:.2f}, n={d['n']}, p={d['p_value']})"
+            f"  {dim:<14} {arrow} delta={delta:+.3f} "
+            f"({d['baseline_mean']:.2f} → {d['post_fix_mean']:.2f}, "
+            f"n={d['n']}, p={d['p_value']}){mark}"
         )
 
 

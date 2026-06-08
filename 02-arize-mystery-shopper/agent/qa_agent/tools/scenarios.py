@@ -121,7 +121,16 @@ async def run_scenario(
         "phoenix_session_id": session_id,
         "sut_prompt_version": sut_prompt_version,
         "scores": scores,
-        "passed": all(s["median_score"] >= 0.5 for s in scores),
+        # Hallucination is the one inverted dimension: higher = MORE hallucinated.
+        # The other five are "higher = better." Pass check has to flip the test
+        # for hallucination, otherwise every scenario with any hallucination
+        # signal at all gets marked failed and pass-rate collapses to 0.
+        "passed": all(
+            (s["median_score"] < 0.5)
+            if s["dimension"] == "hallucination"
+            else (s["median_score"] >= 0.5)
+            for s in scores
+        ),
         "transcript": transcript,
         "transcript_len": len(transcript),
     }

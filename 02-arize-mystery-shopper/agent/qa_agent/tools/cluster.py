@@ -100,7 +100,18 @@ def cluster_failures(rationales: list[dict[str, Any]]) -> dict[str, Any]:
         _log.warning("cluster response 'clusters' not a list; falling back")
         return _fallback_cluster(rationales)
 
-    return {"clusters": [_normalize_cluster(c) for c in clusters[:3]]}
+    normalized = [_normalize_cluster(c) for c in clusters[:3]]
+    # Prioritize hallucination clusters when present. Hallucinated policy claims
+    # are safety-critical (the agent lies to customers about what's offered) and
+    # outrank "low-volume" failure clusters even when count alone wouldn't pick
+    # them. We still keep up to three clusters; only the order changes.
+    normalized.sort(
+        key=lambda c: (
+            0 if "hallucination" in c.get("dimensions_affected", []) else 1,
+            -c.get("count", 0),
+        )
+    )
+    return {"clusters": normalized}
 
 
 def _normalize_cluster(c: dict[str, Any]) -> dict[str, Any]:
@@ -146,7 +157,12 @@ def _fallback_cluster(rationales: list[dict[str, Any]]) -> dict[str, Any]:
                 "dimensions_affected": [dim],
             }
         )
-    clusters.sort(key=lambda c: c["count"], reverse=True)
+    clusters.sort(
+        key=lambda c: (
+            0 if "hallucination" in c.get("dimensions_affected", []) else 1,
+            -c["count"],
+        )
+    )
     return {"clusters": clusters[:3]}
 
 
