@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
-import os
+import re
 from typing import Any
 
 from google.genai import types
@@ -24,6 +24,81 @@ from extractor import ExtractedReport
 from prompts import DISCLAIMER_LONG, SYNTHESIS_SYSTEM_PROMPT
 from retriever import RetrievalBundle, RetrievedDoc
 from vertex_ai import get_client, get_embedding_model, get_gemini_model
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic-language gate
+#
+# The Pydantic schema enforces structural invariants (disclaimer present,
+# follow-up references the clinician). It cannot see *drift inside the prose*
+# — a model that, despite the system prompt, writes "you have cancer" in the
+# translation field. These high-precision patterns catch that class of
+# violation. On a hit we discard the generated prose and fall back to the
+# safe, disclaimer-bearing response rather than ship diagnostic language.
+#
+# Patterns are deliberately narrow (they require a medical object) so legal
+# phrasings like "your report describes...", "this finding is associated
+# with...", or "you may want to ask your clinician whether..." never trip.
+# ---------------------------------------------------------------------------
+
+_DIAGNOSIS_OBJECT = (
+    r"cancer|carcinoma|malignancy|malignant|tumou?r|benign|nodule|mass|"
+    r"lesion|disease|anemia|anaemia|infection|condition"
+)
+
+_BANNED_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # "you have a thyroid nodule", "you do not have cancer", etc.
+    re.compile(
+        r"\byou\s+(?:have|have got|probably have|likely have|most likely have|"
+        r"definitely have|do not have|don'?t have)\b(?:\s+\w+){0,3}?\s+"
+        rf"(?:{_DIAGNOSIS_OBJECT})\b",
+        re.IGNORECASE,
+    ),
+    # "the diagnosis is ...", "the diagnosis could be ..."
+    re.compile(
+        r"\bthe\s+diagnosis\s+(?:is|was|will be|could be|may be|is likely|"
+        r"appears to be)\b",
+        re.IGNORECASE,
+    ),
+    # "you are diagnosed with ...", "you're suffering from ..."
+    re.compile(
+        r"\byou(?:\s+are|'re)\s+(?:diagnosed with|suffering from|positive for)\b",
+        re.IGNORECASE,
+    ),
+    # "this is cancer", "this is benign", "this looks like a malignancy"
+    re.compile(
+        r"\bthis\s+(?:is|looks like|appears to be|is likely)\s+(?:a\s+|an\s+)?"
+        rf"(?:{_DIAGNOSIS_OBJECT})\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def find_diagnostic_violation(decoded: "DecodedReport") -> str | None:
+    """Return the first diagnostic phrase found in the prose, or None.
+
+    Scans the free-text fields most likely to attract diagnostic drift.
+    Emergency-shaped responses are exempt: they intentionally carry the
+    fixed REFUSAL_EMERGENCY text, not generated prose.
+    """
+
+    if decoded.is_emergency_shaped:
+        return None
+
+    prose = " ".join(
+        [
+            decoded.translation,
+            decoded.what_this_means,
+            decoded.statistical_context,
+            decoded.likely_followup,
+            *decoded.questions_to_ask,
+        ]
+    )
+    for pattern in _BANNED_PATTERNS:
+        match = pattern.search(prose)
+        if match:
+            return match.group(0)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -139,12 +214,26 @@ async def respond(
             bundle=bundle,
         )
         decoded = DecodedReport.model_validate_json(response.text or "")
+
+        violation = find_diagnostic_violation(decoded)
+        if violation is not None:
+            # The model produced diagnostic prose despite the system prompt.
+            # Do not ship it: return the safe, disclaimer-bearing fallback and
+            # record what tripped the gate for observability.
+            fallback = _fallback_response(
+                bundle, error=ValueError(f"diagnostic language: {violation!r}")
+            )
+            fallback.metadata["safety_filtered"] = True
+            fallback.metadata["safety_match"] = violation
+            return fallback
+
         decoded.metadata = {
             **decoded.metadata,
             "generated_at": dt.datetime.utcnow().isoformat() + "Z",
             "gemini_model": get_gemini_model(),
             "embedding_model": get_embedding_model(),
             "stub": False,
+            "safety_filtered": False,
         }
         return decoded
     except Exception as exc:

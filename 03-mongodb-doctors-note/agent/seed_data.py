@@ -87,6 +87,87 @@ SAMPLE_LITERATURE: list[dict[str, Any]] = [
         "language": "en",
         "is_sample": True,
     },
+    {
+        "_id": "sample-pubmed-lung-fleischner-2021",
+        "title": (
+            "Outcomes of solid pulmonary nodules <6 mm under Fleischner-based "
+            "surveillance: a retrospective cohort"
+        ),
+        "abstract": (
+            "Among 1,184 incidentally detected solid pulmonary nodules under "
+            "6 mm in low-risk patients, the malignancy rate over 5 years was "
+            "below 1%. Routine follow-up imaging was not required per "
+            "Fleischner Society 2017 criteria for this size and risk profile."
+        ),
+        "condition": "lung_nodule",
+        "severity_tier": "low",
+        "source": "pubmed",
+        "url": "https://pubmed.ncbi.nlm.nih.gov/SAMPLE-0003",
+        "published_year": 2021,
+        "language": "en",
+        "is_sample": True,
+    },
+    {
+        "_id": "sample-pubmed-lung-6to8mm-2020",
+        "title": (
+            "Malignancy risk in solid pulmonary nodules 6-8 mm: pooled "
+            "estimates and surveillance intervals"
+        ),
+        "abstract": (
+            "Solid nodules measuring 6-8 mm carried a pooled malignancy risk "
+            "of roughly 0.5-2% in low-risk individuals. A single follow-up CT "
+            "at 6-12 months, with optional further imaging at 18-24 months, "
+            "was the most common recommended pathway."
+        ),
+        "condition": "lung_nodule",
+        "severity_tier": "moderate",
+        "source": "pubmed",
+        "url": "https://pubmed.ncbi.nlm.nih.gov/SAMPLE-0004",
+        "published_year": 2020,
+        "language": "en",
+        "is_sample": True,
+    },
+    {
+        "_id": "sample-pubmed-breast-birads3-2022",
+        "title": (
+            "Probably benign (BI-RADS 3) breast lesions: malignancy rate under "
+            "short-interval follow-up"
+        ),
+        "abstract": (
+            "Across pooled series, lesions categorized BI-RADS 3 on imaging "
+            "carried a malignancy rate of under 2%. Short-interval (6-month) "
+            "follow-up imaging rather than immediate biopsy was the standard "
+            "management, with most lesions remaining stable."
+        ),
+        "condition": "breast_mass",
+        "severity_tier": "low",
+        "source": "pubmed",
+        "url": "https://pubmed.ncbi.nlm.nih.gov/SAMPLE-0005",
+        "published_year": 2022,
+        "language": "en",
+        "is_sample": True,
+    },
+    {
+        "_id": "sample-pubmed-cbc-mildanemia-2021",
+        "title": (
+            "Clinical significance of mild isolated anemia on routine CBC in "
+            "adults: a population review"
+        ),
+        "abstract": (
+            "Mild, isolated reductions in hemoglobin on routine complete blood "
+            "counts were frequently transient or attributable to nutritional "
+            "and benign causes. Guidelines emphasize trend over single values "
+            "and recommend correlating with iron studies and clinical context "
+            "rather than treating an isolated value in isolation."
+        ),
+        "condition": "cbc_abnormality",
+        "severity_tier": "low",
+        "source": "pubmed",
+        "url": "https://pubmed.ncbi.nlm.nih.gov/SAMPLE-0006",
+        "published_year": 2021,
+        "language": "en",
+        "is_sample": True,
+    },
 ]
 
 SAMPLE_GUIDELINES: list[dict[str, Any]] = [
@@ -124,6 +205,41 @@ SAMPLE_GUIDELINES: list[dict[str, Any]] = [
         "language": "en",
         "is_sample": True,
     },
+    {
+        "_id": "sample-fleischner-2017-excerpt",
+        "title": "Fleischner Society Guidelines for Pulmonary Nodules (2017, excerpt)",
+        "text": (
+            "Solid nodules <6 mm in low-risk patients: no routine follow-up. "
+            "6-8 mm: CT at 6-12 months, then consider CT at 18-24 months. "
+            ">8 mm: consider CT at 3 months, PET/CT, or tissue sampling. Risk "
+            "factors and nodule morphology modify these intervals."
+        ),
+        "condition": "lung_nodule",
+        "severity_tier": "low",
+        "source": "fleischner_2017",
+        "url": "https://pubs.rsna.org/doi/10.1148/radiol.2017161659",
+        "published_year": 2017,
+        "language": "en",
+        "is_sample": True,
+    },
+    {
+        "_id": "sample-acr-birads-2013-excerpt",
+        "title": "ACR BI-RADS Atlas (5th ed., excerpt)",
+        "text": (
+            "BI-RADS category 3 (probably benign) findings have a malignancy "
+            "rate of <=2% and are managed with short-interval (6-month) "
+            "follow-up imaging. Category 4 and 5 findings warrant tissue "
+            "diagnosis. The category reflects suspicion on imaging, not a "
+            "diagnosis."
+        ),
+        "condition": "breast_mass",
+        "severity_tier": "low",
+        "source": "acr_birads_2013",
+        "url": "https://www.acr.org/Clinical-Resources/Reporting-and-Data-Systems/Bi-Rads",
+        "published_year": 2013,
+        "language": "en",
+        "is_sample": True,
+    },
 ]
 
 SAMPLE_FORUM: list[dict[str, Any]] = [
@@ -137,6 +253,40 @@ SAMPLE_FORUM: list[dict[str, Any]] = [
             "at the 12-month follow-up."
         ),
         "condition": "thyroid_nodule",
+        "severity_tier": "low",
+        "source": "sample:fabricated",
+        "url": None,
+        "published_year": 2024,
+        "language": "en",
+        "is_sample": True,
+    },
+    {
+        "_id": "sample-forum-lung-incidental",
+        "title": "Tiny lung nodule found on a CT for something else — freaking out",
+        "text": (
+            "FABRICATED SAMPLE for hackathon scaffold. Commenters describe a "
+            "sub-6 mm nodule found incidentally, being told no follow-up scan "
+            "was needed, and asking their doctor to confirm the size and risk "
+            "category in plain terms."
+        ),
+        "condition": "lung_nodule",
+        "severity_tier": "low",
+        "source": "sample:fabricated",
+        "url": None,
+        "published_year": 2024,
+        "language": "en",
+        "is_sample": True,
+    },
+    {
+        "_id": "sample-forum-breast-birads3",
+        "title": "BI-RADS 3 on my mammogram, told to come back in 6 months",
+        "text": (
+            "FABRICATED SAMPLE for hackathon scaffold. Commenters describe a "
+            "BI-RADS 3 result managed with a 6-month follow-up rather than an "
+            "immediate biopsy, and asking the clinician what would change the "
+            "plan to an earlier biopsy."
+        ),
+        "condition": "breast_mass",
         "severity_tier": "low",
         "source": "sample:fabricated",
         "url": None,

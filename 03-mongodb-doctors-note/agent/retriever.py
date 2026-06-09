@@ -150,34 +150,37 @@ async def retrieve(
     working during development.
     """
 
-    db = os.getenv("MONGODB_DB", "doctors_note")
-    query_text = _compose_query_text(extracted)
-    query_vector = await embed_text_async(
-        query_text,
-        task_type="RETRIEVAL_QUERY",
-    )
-    pipeline_lit = build_pipeline(
-        query_vector=query_vector,
-        condition=extracted.primary_condition,
-        severity_tier=extracted.severity_tier_guess,
-        k=k,
-    )
-    pipeline_guide = build_pipeline(
-        query_vector=query_vector,
-        condition=extracted.primary_condition,
-        severity_tier=None,  # guidelines apply across severity tiers
-        k=3,
-    )
-    pipeline_forum = build_pipeline(
-        query_vector=query_vector,
-        condition=extracted.primary_condition,
-        severity_tier=extracted.severity_tier_guess,
-        k=k,
-    )
+    # No MCP session means no Atlas: skip the (paid) embedding call entirely
+    # and return the deterministic bundle so the rest of the pipeline runs.
     if session is None:
         return _stub_bundle()
 
+    db = os.getenv("MONGODB_DB", "doctors_note")
+
     try:
+        query_text = _compose_query_text(extracted)
+        query_vector = await embed_text_async(
+            query_text,
+            task_type="RETRIEVAL_QUERY",
+        )
+        pipeline_lit = build_pipeline(
+            query_vector=query_vector,
+            condition=extracted.primary_condition,
+            severity_tier=extracted.severity_tier_guess,
+            k=k,
+        )
+        pipeline_guide = build_pipeline(
+            query_vector=query_vector,
+            condition=extracted.primary_condition,
+            severity_tier=None,  # guidelines apply across severity tiers
+            k=3,
+        )
+        pipeline_forum = build_pipeline(
+            query_vector=query_vector,
+            condition=extracted.primary_condition,
+            severity_tier=extracted.severity_tier_guess,
+            k=k,
+        )
         literature = await _run_aggregate(
             session,
             database=db,

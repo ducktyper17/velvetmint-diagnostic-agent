@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /usr/local/bin/uv
 
 WORKDIR /app
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 # uv.lock is optional in the scaffold; copy if it exists
 COPY uv.loc[k] ./
 
@@ -55,6 +55,9 @@ WORKDIR /app
 COPY qa_agent ./qa_agent
 COPY sut ./sut
 COPY scenarios.py judge_prompts.py ./
+# Canonical "winning" delta report shipped with the image so the live demo's
+# "Show loop report" button has data without needing a fresh audit run.
+COPY delta_report.json ./
 
 ENV PORT=8080 \
     APP_ENV=production \

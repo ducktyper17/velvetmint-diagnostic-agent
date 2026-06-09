@@ -164,10 +164,18 @@ async def get_loop_report() -> dict[str, Any]:
     report instead of waiting for the agent to finish).
     """
 
-    path = Path(__file__).resolve().parent.parent.parent / "out" / "delta_report.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="no loop report on disk yet")
-    return json.loads(path.read_text())
+    # Try the local-dev path first (scripts/run_loop.py writes to
+    # ../out/delta_report.json relative to the agent dir); then fall back to
+    # the in-image canonical demo copy at /app/delta_report.json (baked by
+    # the Dockerfile so the deployed demo has data without a fresh audit run).
+    candidates = [
+        Path(__file__).resolve().parent.parent.parent / "out" / "delta_report.json",
+        Path(__file__).resolve().parent.parent / "delta_report.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            return json.loads(path.read_text())
+    raise HTTPException(status_code=404, detail="no loop report on disk yet")
 
 
 async def _run_audit(job_id: str, req: AuditRequest) -> None:

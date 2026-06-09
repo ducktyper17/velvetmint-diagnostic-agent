@@ -14,10 +14,12 @@ from __future__ import annotations
 import os
 import shlex
 from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -38,6 +40,8 @@ async def lifespan(app: FastAPI):
     """
 
     stack = AsyncExitStack()
+    app.state.mcp_session = None
+    app.state.mcp_stack = stack
     try:
         command = os.getenv("MCP_SERVER_CMD", "npx")
         raw_args = os.getenv(
@@ -50,12 +54,16 @@ async def lifespan(app: FastAPI):
             args=args,
             env=os.environ.copy(),
         )
-        read, write = await stack.enter_async_context(stdio_client(server_params))
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-
-        app.state.mcp_session = session
-        app.state.mcp_stack = stack
+        try:
+            read, write = await stack.enter_async_context(stdio_client(server_params))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            app.state.mcp_session = session
+        except Exception as exc:
+            # Degrade gracefully: the service still serves the UI and /decode,
+            # and retrieval falls back to a deterministic bundle. This keeps a
+            # live demo from dying if the MCP subprocess or Atlas is flaky.
+            print(f"[lifespan] MongoDB MCP unavailable, running degraded: {exc}")
         yield
     finally:
         await stack.aclose()
@@ -70,6 +78,17 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index() -> FileResponse:
+    """Serve the single-page demo UI. Kept inline so the whole app is one
+    Cloud Run service with no separate frontend build or CORS surface."""
+
+    return FileResponse(_STATIC_DIR / "index.html")
 
 
 @app.get("/health")

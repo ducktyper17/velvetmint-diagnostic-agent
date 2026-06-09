@@ -11,7 +11,6 @@ Why this lives in its own module:
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Literal
 
 from google.genai import types

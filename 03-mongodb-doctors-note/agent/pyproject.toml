@@ -42,8 +42,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  # Intentionally minimal for the backup scaffold. Tests are a TODO.
   "ruff>=0.7.0",
+  "pytest>=8.0.0",
 ]
 
 [tool.setuptools]

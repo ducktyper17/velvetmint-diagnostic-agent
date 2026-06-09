@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Doctor's Note Decoder — explains, never diagnoses</title>
+  <style>
+    :root {
+      --bg: #0f1320;
+      --panel: #171c2e;
+      --panel-2: #1f2740;
+      --ink: #e8ecf6;
+      --muted: #9aa6c4;
+      --accent: #5b8cff;
+      --accent-2: #38d39f;
+      --warn: #ffd166;
+      --line: #2a3350;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding-bottom: 64px;
+    }
+    header {
+      padding: 28px 20px 18px; max-width: 980px; margin: 0 auto;
+    }
+    h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: -0.01em; }
+    .tag { color: var(--accent-2); font-weight: 600; }
+    .sub { color: var(--muted); margin: 0; }
+    main { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
+    @media (min-width: 880px) { .grid { grid-template-columns: 1.1fr 0.9fr; } }
+    .card {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 14px; padding: 18px;
+    }
+    .card h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--muted); }
+    textarea {
+      width: 100%; min-height: 150px; resize: vertical; background: var(--panel-2);
+      color: var(--ink); border: 1px solid var(--line); border-radius: 10px;
+      padding: 12px; font: inherit;
+    }
+    .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+    button {
+      background: var(--accent); color: white; border: 0; border-radius: 10px;
+      padding: 11px 18px; font-weight: 600; cursor: pointer; font-size: 15px;
+    }
+    button:disabled { opacity: 0.5; cursor: progress; }
+    .ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); }
+    input[type=file] { color: var(--muted); font-size: 13px; }
+    .field { margin: 0; padding: 12px 0; border-top: 1px solid var(--line); }
+    .field:first-child { border-top: 0; padding-top: 0; }
+    .field .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--accent); margin-bottom: 4px; }
+    ul.q { margin: 6px 0 0; padding-left: 18px; }
+    ul.q li { margin: 4px 0; }
+    .src-group { margin-bottom: 14px; }
+    .src-group .gh { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--accent-2); margin-bottom: 6px; }
+    .src {
+      background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px;
+      padding: 9px 11px; margin: 6px 0; font-size: 13px;
+    }
+    .src .t { font-weight: 600; }
+    .src .m { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .score { float: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+    .muted { color: var(--muted); }
+    .hidden { display: none; }
+    .spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid var(--line);
+      border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite;
+      vertical-align: -2px; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px;
+      background: rgba(56,211,159,0.14); color: var(--accent-2); border: 1px solid rgba(56,211,159,0.3); }
+    .pill.warn { background: rgba(255,209,102,0.14); color: var(--warn); border-color: rgba(255,209,102,0.3); }
+    .disclaimer-band {
+      position: fixed; bottom: 0; left: 0; right: 0; background: #0b0f1a;
+      border-top: 1px solid var(--line); color: var(--warn); font-size: 12.5px;
+      padding: 9px 20px; text-align: center; z-index: 10;
+    }
+    .err { color: #ff7a7a; }
+    .samples { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    .samples button { background: var(--panel-2); border:1px solid var(--line); color: var(--muted);
+      font-weight: 500; font-size: 12.5px; padding: 7px 11px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Doctor's Note Decoder</h1>
+    <p class="sub"><span class="tag">It explains. It does not diagnose.</span>
+      Paste a radiology or lab report and get a plain-language explanation,
+      the statistical context, and three questions to ask your doctor.</p>
+  </header>
+
+  <main>
+    <div class="grid">
+      <section>
+        <div class="card">
+          <h2>Your report</h2>
+          <textarea id="reportText" placeholder="Paste the text of your report here, or attach a PDF / image below..."></textarea>
+          <div class="row">
+            <input type="file" id="reportFile" accept=".pdf,image/*" />
+          </div>
+          <div class="samples">
+            <button data-sample="thyroid">Try: thyroid ultrasound</button>
+            <button data-sample="lung">Try: lung nodule CT</button>
+            <button data-sample="breast">Try: BI-RADS 3 mammogram</button>
+          </div>
+          <div class="row">
+            <button id="decodeBtn">Explain my report</button>
+            <button class="ghost" id="clearBtn">Clear</button>
+            <span id="status" class="muted"></span>
+          </div>
+        </div>
+
+        <div class="card hidden" id="resultCard" style="margin-top:18px">
+          <h2>Plain-language explanation <span id="safetyPill"></span></h2>
+          <div class="field"><div class="label">What your report says</div><div id="r_translation"></div></div>
+          <div class="field"><div class="label">What this means</div><div id="r_means"></div></div>
+          <div class="field"><div class="label">Statistical context</div><div id="r_stats"></div></div>
+          <div class="field"><div class="label">Questions to ask your clinician</div>
+            <ul class="q" id="r_questions"></ul></div>
+          <div class="field"><div class="label">Likely follow-up</div><div id="r_followup"></div></div>
+          <div class="field"><div class="label muted">Disclaimer</div>
+            <div id="r_disclaimer" class="muted" style="font-size:13px;white-space:pre-wrap"></div></div>
+        </div>
+      </section>
+
+      <aside>
+        <div class="card">
+          <h2>Knowledge base &middot; MongoDB Atlas Vector Search</h2>
+          <p class="muted" style="margin-top:-4px;font-size:13px">
+            Each explanation is grounded in documents retrieved from Atlas via a single
+            <code>$vectorSearch</code> aggregation, filtered by condition, severity, recency and language.</p>
+          <div id="sources"><p class="muted">Sources retrieved for your report will appear here.</p></div>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <div class="disclaimer-band">
+    This tool does not diagnose, treat, or replace your clinician. It explains the words on your report and the published literature around them. In an emergency, call your local emergency number.
+  </div>
+
+  <script>
+    const SAMPLES = {
+      thyroid: "THYROID ULTRASOUND (SAMPLE — NOT A REAL PATIENT)\nFindings: 2.1 cm nodule in the right thyroid lobe, mixed echogenicity, no microcalcifications. TI-RADS 3.\nRecommendation: follow-up ultrasound in 12 months.",
+      lung: "CT CHEST (SAMPLE — NOT A REAL PATIENT)\nFindings: incidental 5 mm solid pulmonary nodule, right upper lobe. No lymphadenopathy. Low-risk patient.\nRecommendation: per Fleischner criteria, no routine follow-up required.",
+      breast: "DIAGNOSTIC MAMMOGRAM (SAMPLE — NOT A REAL PATIENT)\nFindings: 0.8 cm circumscribed oval mass, left breast, probably benign. BI-RADS category 3.\nRecommendation: short-interval follow-up imaging in 6 months."
+    };
+    const $ = (id) => document.getElementById(id);
+
+    document.querySelectorAll('[data-sample]').forEach(b =>
+      b.addEventListener('click', () => { $('reportText').value = SAMPLES[b.dataset.sample]; $('reportFile').value=''; }));
+
+    $('clearBtn').addEventListener('click', () => {
+      $('reportText').value=''; $('reportFile').value='';
+      $('resultCard').classList.add('hidden');
+      $('sources').innerHTML = '<p class="muted">Sources retrieved for your report will appear here.</p>';
+      $('status').textContent = '';
+    });
+
+    $('decodeBtn').addEventListener('click', decode);
+
+    async function decode() {
+      const text = $('reportText').value.trim();
+      const file = $('reportFile').files[0];
+      if (!text && !file) { setStatus('Paste a report or attach a file first.', true); return; }
+
+      const fd = new FormData();
+      if (file) fd.append('file', file); else fd.append('text', text);
+
+      $('decodeBtn').disabled = true;
+      setStatus('<span class="spinner"></span>Extracting → retrieving from Atlas → explaining…');
+      try {
+        const res = await fetch('/decode', { method: 'POST', body: fd });
+        if (!res.ok) {
+          const detail = await res.json().catch(() => ({}));
+          throw new Error(detail.detail || ('Request failed (' + res.status + ')'));
+        }
+        render(await res.json());
+        setStatus('Done. This is an explanation, not a diagnosis.');
+      } catch (e) {
+        setStatus(e.message, true);
+      } finally {
+        $('decodeBtn').disabled = false;
+      }
+    }
+
+    function setStatus(html, isErr) {
+      const s = $('status'); s.innerHTML = html; s.className = isErr ? 'err' : 'muted';
+    }
+
+    function render(d) {
+      $('resultCard').classList.remove('hidden');
+      $('r_translation').textContent = d.translation || '';
+      $('r_means').textContent = d.what_this_means || '';
+      $('r_stats').textContent = d.statistical_context || '';
+      $('r_followup').textContent = d.likely_followup || '';
+      $('r_disclaimer').textContent = d.disclaimer || '';
+      const ql = $('r_questions'); ql.innerHTML = '';
+      (d.questions_to_ask || []).forEach(q => { const li = document.createElement('li'); li.textContent = q; ql.appendChild(li); });
+
+      const pill = $('safetyPill');
+      if (d.metadata && d.metadata.safety_filtered) {
+        pill.innerHTML = '<span class="pill warn">safety-filtered</span>';
+      } else if (d.is_emergency_shaped) {
+        pill.innerHTML = '<span class="pill warn">emergency guidance</span>';
+      } else {
+        pill.innerHTML = '<span class="pill">grounded in Atlas sources</span>';
+      }
+      renderSources(d.sources || []);
+    }
+
+    function renderSources(sources) {
+      const groups = { literature: [], guidelines: [], forum_posts: [] };
+      sources.forEach(s => (groups[s.collection] || (groups[s.collection] = [])).push(s));
+      const labels = { literature: 'Literature', guidelines: 'Clinical guidelines', forum_posts: 'Patient experiences' };
+      const host = $('sources'); host.innerHTML = '';
+      if (!sources.length) { host.innerHTML = '<p class="muted">No sources returned.</p>'; return; }
+      Object.keys(labels).forEach(coll => {
+        const items = groups[coll]; if (!items || !items.length) return;
+        const wrap = document.createElement('div'); wrap.className = 'src-group';
+        wrap.innerHTML = '<div class="gh">' + labels[coll] + '</div>';
+        items.forEach(s => {
+          const el = document.createElement('div'); el.className = 'src';
+          const link = s.url ? `<a href="${s.url}" target="_blank" rel="noopener" style="color:var(--accent)">link</a>` : '';
+          el.innerHTML = `<div class="t">${escapeHtml(s.title || 'Untitled')}</div>`
+            + `<div class="m">${escapeHtml(s.source || '')} ${link}</div>`;
+          wrap.appendChild(el);
+        });
+        host.appendChild(wrap);
+      });
+    }
+
+    function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  </script>
+</body>
+</html>
