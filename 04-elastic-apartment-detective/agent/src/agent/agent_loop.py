@@ -1,13 +1,29 @@
-"""Streaming investigation loop for the Elastic Apartment Detective."""
+"""ReAct-style investigation loop for the Elastic Apartment Detective.
+
+The loop drives Gemini (via Vertex AI) through the Elastic Agent Builder tool
+surface: it reads building memory, HPD violations, 311 signals, tenant
+sentiment, and a neighborhood baseline, writes a normalized brief back to
+Elastic, then finalizes a renter-risk report. A deterministic stub mirrors the
+same tool sequence so the product runs end-to-end with no GCP credentials and
+so the demo is bulletproof on stage.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+from google import genai
+from google.genai import types
+
+from agent import prompts
 from agent.config import Settings
 from agent.tools import (
     BuildingMemory,
@@ -25,7 +41,20 @@ from agent.tools import (
     search_tenant_sentiment,
 )
 
+log = logging.getLogger(__name__)
+
 EventType = Literal["thought", "tool_call", "tool_result", "final_report", "error", "done"]
+
+# Tool names the model may call to gather evidence (read side).
+READ_TOOLS = frozenset(
+    {
+        "search_building_memory",
+        "get_hpd_violations",
+        "get_311_signals",
+        "search_tenant_sentiment",
+        "compare_to_neighborhood_baseline",
+    }
+)
 
 
 @dataclass
@@ -67,134 +96,159 @@ async def run_agent_loop(
     settings: Settings,
     mcp: ElasticMCPClient,
 ) -> AsyncIterator[AgentEvent]:
-    """Run a deterministic investigation loop until the live Gemini path lands."""
+    """Drive the investigation with Gemini + Elastic and stream progress."""
 
-    iteration = 1
-    address = normalize_address(context.address)
+    user_goal = (
+        context.user_question.strip()
+        if context.user_question
+        else f"Investigate {context.address} and tell me what I should know before I sign."
+    )
+    history: list[dict[str, str]] = [
+        {"role": "user", "content": user_goal},
+    ]
 
-    yield AgentEvent(
-        "thought",
-        {"text": "Plan: check prior memory, hard evidence, neighborhood signals, and sentiment."},
-        iteration,
-    )
+    for iteration in range(1, settings.agent_max_iterations + 1):
+        try:
+            turn = await _call_gemini(history=history, settings=settings, context=context)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the UI, never crashes the stream
+            log.exception("agent_loop.gemini_error")
+            yield AgentEvent("error", {"error": str(exc)}, iteration)
+            return
 
-    memory = await _run_tool(
-        iteration=iteration,
-        name="search_building_memory",
-        args={"address": address},
-        caller=lambda: search_building_memory(mcp, address=address),
-    )
-    yield memory[0]
-    yield memory[1]
-    memory_result = BuildingMemory.model_validate(memory[1].payload["result"])
-    iteration += 1
+        actionable = [c for c in turn.tool_calls if c.name != "finalize_brief"]
 
-    yield AgentEvent(
-        "thought",
-        {"text": "Looking for building-level housing issues."},
-        iteration,
-    )
-    hpd = await _run_tool(
-        iteration=iteration,
-        name="get_hpd_violations",
-        args={"address": address},
-        caller=lambda: get_hpd_violations(mcp, address=address),
-    )
-    yield hpd[0]
-    yield hpd[1]
-    hpd_result = HPDViolations.model_validate(hpd[1].payload["result"])
-    iteration += 1
+        if not actionable and turn.is_final:
+            if not turn.final_payload:
+                yield AgentEvent(
+                    "error",
+                    {"error": "Gemini finalized without a structured renter brief."},
+                    iteration,
+                )
+                return
+            report = turn.final_payload
+            yield AgentEvent("thought", {"text": turn.final_thought}, iteration)
+            yield AgentEvent(
+                "final_report",
+                {
+                    "listing": {
+                        "address": report.address,
+                        "source": report.listing_source,
+                        "listing_url": context.listing_url,
+                    },
+                    "risk_score": report.risk_score,
+                    "summary": report.summary,
+                    "top_red_flags": report.top_red_flags,
+                    "questions_to_ask": report.questions_to_ask,
+                    "evidence": report.evidence,
+                },
+                iteration,
+            )
+            yield AgentEvent("done", {"reason": "finalize_brief"}, iteration)
+            return
 
-    yield AgentEvent(
-        "thought",
-        {"text": "Checking quality-of-life signals around the address."},
-        iteration,
-    )
-    complaints = await _run_tool(
-        iteration=iteration,
-        name="get_311_signals",
-        args={"address": address},
-        caller=lambda: get_311_signals(mcp, address=address),
-    )
-    yield complaints[0]
-    yield complaints[1]
-    complaint_result = ComplaintSignals.model_validate(complaints[1].payload["result"])
-    iteration += 1
+        if not actionable:
+            yield AgentEvent(
+                "error", {"error": "Gemini returned no actionable tool call."}, iteration
+            )
+            return
 
-    yield AgentEvent(
-        "thought",
-        {"text": "Searching for softer tenant-sentiment evidence."},
-        iteration,
-    )
-    sentiment = await _run_tool(
-        iteration=iteration,
-        name="search_tenant_sentiment",
-        args={"address": address},
-        caller=lambda: search_tenant_sentiment(mcp, address=address),
-    )
-    yield sentiment[0]
-    yield sentiment[1]
-    sentiment_result = TenantSentiment.model_validate(sentiment[1].payload["result"])
-    iteration += 1
+        # Announce the batch up front, then fan the independent read tools out
+        # concurrently — that is the bulk of per-investigation latency.
+        for call in actionable:
+            yield AgentEvent("thought", {"text": call.thought}, iteration)
+            yield AgentEvent("tool_call", {"name": call.name, "args": call.args}, iteration)
 
-    yield AgentEvent(
-        "thought",
-        {"text": "Comparing this building to the neighborhood baseline."},
-        iteration,
-    )
-    baseline = await _run_tool(
-        iteration=iteration,
-        name="compare_to_neighborhood_baseline",
-        args={"address": address},
-        caller=lambda: compare_to_neighborhood_baseline(mcp, address=address),
-    )
-    yield baseline[0]
-    yield baseline[1]
-    baseline_result = NeighborhoodComparison.model_validate(baseline[1].payload["result"])
-    iteration += 1
+        results = await asyncio.gather(
+            *(_dispatch_tool(call, mcp=mcp, context=context) for call in actionable)
+        )
 
-    report = _build_report(
-        context=context,
-        memory=memory_result,
-        hpd=hpd_result,
-        complaints=complaint_result,
-        sentiment=sentiment_result,
-        baseline=baseline_result,
-    )
-
-    summary = report.summary
-    saved = await _run_tool(
-        iteration=iteration,
-        name="save_building_brief",
-        args={"address": address, "risk_score": report.risk_score, "summary": summary},
-        caller=lambda: save_building_brief(
-            mcp,
-            address=address,
-            risk_score=report.risk_score,
-            summary=summary,
-        ),
-    )
-    yield saved[0]
-    yield saved[1]
+        for call, tool_result in zip(actionable, results, strict=True):
+            yield AgentEvent("tool_result", {"name": call.name, "result": tool_result}, iteration)
+            history.append(
+                {
+                    "role": "tool",
+                    "content": json.dumps({"tool": call.name, "result": tool_result}),
+                }
+            )
 
     yield AgentEvent(
-        "final_report",
-        {
-            "listing": {
-                "address": report.address,
-                "source": report.listing_source,
-                "listing_url": context.listing_url,
-            },
-            "risk_score": report.risk_score,
-            "summary": report.summary,
-            "top_red_flags": report.top_red_flags,
-            "questions_to_ask": report.questions_to_ask,
-            "evidence": report.evidence,
-        },
-        iteration,
+        "error",
+        {"error": "max iterations exceeded; aborting without a final brief"},
+        settings.agent_max_iterations,
     )
-    yield AgentEvent("done", {"reason": "finalize_investigation"}, iteration)
-    _ = settings
+
+
+# Human-friendly pacing (seconds) for the on-stage replay path, keyed by event
+# type. Picked so the investigation panel reads at a watchable speed on camera.
+_REPLAY_PACING: dict[str, float] = {
+    "thought": 0.55,
+    "tool_call": 0.3,
+    "tool_result": 0.85,
+    "final_report": 0.7,
+    "done": 0.2,
+    "error": 0.3,
+}
+
+
+async def run_replay(
+    *,
+    context: ListingContext,
+    settings: Settings,
+) -> AsyncIterator[AgentEvent]:
+    """Stream a deterministic, paced investigation for bulletproof live demos.
+
+    Forces the offline stub paths (no Gemini, no live Elastic, no network) and
+    adds human-readable delays between events, so the story is identical every
+    run and cannot fail on stage even with no credentials or connectivity.
+    """
+
+    replay_settings = settings.model_copy(
+        update={"stub_gemini_responses": True, "demo_mode": True}
+    )
+    mcp = ElasticMCPClient(replay_settings)
+    try:
+        async for event in run_agent_loop(
+            context=context, settings=replay_settings, mcp=mcp
+        ):
+            await asyncio.sleep(_REPLAY_PACING.get(event.type, 0.3))
+            yield event
+    finally:
+        await mcp.aclose()
+
+
+async def _dispatch_tool(
+    call: _ToolCall,
+    *,
+    mcp: ElasticMCPClient,
+    context: ListingContext,
+) -> dict[str, Any]:
+    """Execute one tool call and return its result dict (never raises)."""
+
+    address = str(call.args.get("address", context.address)) or context.address
+    try:
+        if call.name == "search_building_memory":
+            return (await search_building_memory(mcp, address=address)).model_dump()
+        if call.name == "get_hpd_violations":
+            return (await get_hpd_violations(mcp, address=address)).model_dump()
+        if call.name == "get_311_signals":
+            return (await get_311_signals(mcp, address=address)).model_dump()
+        if call.name == "search_tenant_sentiment":
+            return (await search_tenant_sentiment(mcp, address=address)).model_dump()
+        if call.name == "compare_to_neighborhood_baseline":
+            return (await compare_to_neighborhood_baseline(mcp, address=address)).model_dump()
+        if call.name == "save_building_brief":
+            return (
+                await save_building_brief(
+                    mcp,
+                    address=address,
+                    risk_score=_coerce_float(call.args.get("risk_score"), default=0.0),
+                    summary=str(call.args.get("summary", "")),
+                )
+            ).model_dump()
+        return {"error": f"unknown tool {call.name!r}"}
+    except Exception as exc:  # noqa: BLE001 - reported back to the model as a tool error
+        log.exception("agent_loop.tool_error", extra={"tool": call.name})
+        return {"error": str(exc)}
 
 
 def build_listing_context(
@@ -226,6 +280,12 @@ def build_listing_context(
         else:
             raise ValueError("address extraction is not reliable enough yet; pass `address` too")
 
+    # In demo mode, snap a slug-derived address back to the canonical demo
+    # address so the renter brief shows a clean "123 Orchard St, New York, NY
+    # 10002" instead of the title-cased URL slug.
+    if settings.is_demo and _loose_match(derived_address, settings.demo_address):
+        derived_address = settings.demo_address
+
     return ListingContext(
         address=normalize_address(derived_address),
         listing_url=listing_url,
@@ -234,23 +294,357 @@ def build_listing_context(
     )
 
 
-async def _run_tool(
-    *,
-    iteration: int,
-    name: str,
-    args: dict[str, Any],
-    caller: Any,
-) -> tuple[AgentEvent, AgentEvent]:
-    """Wrap one tool call in tool_call and tool_result events."""
+# --------------------------------------------------------------------------- #
+# Gemini turn parsing
+# --------------------------------------------------------------------------- #
 
-    call_event = AgentEvent("tool_call", {"name": name, "args": args}, iteration)
-    result = await caller()
-    result_event = AgentEvent(
-        "tool_result",
-        {"name": name, "result": result.model_dump()},
-        iteration,
+
+@dataclass
+class _ToolCall:
+    """One tool invocation the model asked for, with its public thought."""
+
+    name: str
+    args: dict[str, Any]
+    thought: str
+
+
+@dataclass
+class _Turn:
+    """One parsed Gemini turn — may carry several tool calls and/or a finalize."""
+
+    tool_calls: list[_ToolCall] = field(default_factory=list)
+    is_final: bool = False
+    final_thought: str = ""
+    final_payload: RiskReport | None = None
+
+
+async def _call_gemini(
+    *,
+    history: list[dict[str, str]],
+    settings: Settings,
+    context: ListingContext,
+) -> _Turn:
+    """Call Gemini via Vertex AI and parse the turn's tool decisions."""
+
+    if settings.stub_gemini_responses:
+        return _stub_turn(history=history, context=context)
+
+    prompt = _render_model_prompt(history=history, context=context)
+    tool = types.Tool(function_declarations=_function_declarations())
+    config = types.GenerateContentConfig(
+        temperature=0,
+        tools=[tool],
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        tool_config=types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(mode="ANY")
+        ),
     )
-    return call_event, result_event
+
+    client = _get_genai_client(
+        project=settings.google_cloud_project,
+        location=settings.google_cloud_location,
+    )
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model=settings.vertex_model,
+        contents=prompt,
+        config=config,
+    )
+
+    function_calls = response.function_calls or []
+    if not function_calls:
+        raise RuntimeError("Gemini did not return a function call.")
+
+    turn = _Turn()
+    for function_call in function_calls:
+        args = dict(function_call.args or {})
+        thought = str(args.pop("thought", "")).strip() or _default_thought(function_call.name)
+
+        if function_call.name == "finalize_brief":
+            turn.is_final = True
+            turn.final_thought = thought
+            turn.final_payload = RiskReport(
+                address=str(args.get("address", context.address)) or context.address,
+                listing_source=context.source,
+                risk_score=_coerce_float(args.get("risk_score"), default=0.0) or 0.0,
+                summary=str(args.get("summary", "")),
+                top_red_flags=_coerce_list(args.get("top_red_flags")) or ["limited public signals"],
+                questions_to_ask=_coerce_list(args.get("questions_to_ask")),
+                evidence=_coerce_list(args.get("evidence")),
+            )
+            continue
+
+        turn.tool_calls.append(_ToolCall(name=function_call.name, args=args, thought=thought))
+
+    return turn
+
+
+@lru_cache(maxsize=4)
+def _get_genai_client(*, project: str, location: str) -> genai.Client:
+    """Return a cached Google Gen AI client for Vertex AI."""
+
+    return genai.Client(vertexai=True, project=project, location=location)
+
+
+def _function_declarations() -> list[types.FunctionDeclaration]:
+    """Return the function declarations exposed to Gemini."""
+
+    address_only = {
+        "thought": {
+            "type": "string",
+            "description": "One short public reasoning line to stream to the UI.",
+        },
+        "address": {
+            "type": "string",
+            "description": "The normalized building address under investigation.",
+        },
+    }
+    return [
+        types.FunctionDeclaration(
+            name="search_building_memory",
+            description="Check Elastic for a prior brief on this address (memory index).",
+            parameters_json_schema={
+                "type": "object",
+                "properties": address_only,
+                "required": ["thought", "address"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="get_hpd_violations",
+            description="ES|QL query over HPD violations: open count, severe categories, examples.",
+            parameters_json_schema={
+                "type": "object",
+                "properties": address_only,
+                "required": ["thought", "address"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="get_311_signals",
+            description="ES|QL query over nearby NYC 311 complaints: volume, categories, noise mix.",
+            parameters_json_schema={
+                "type": "object",
+                "properties": address_only,
+                "required": ["thought", "address"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="search_tenant_sentiment",
+            description="Hybrid (semantic + keyword) search over curated tenant-signal documents.",
+            parameters_json_schema={
+                "type": "object",
+                "properties": address_only,
+                "required": ["thought", "address"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="compare_to_neighborhood_baseline",
+            description="Aggregate complaint density vs the ZIP baseline to flag outliers.",
+            parameters_json_schema={
+                "type": "object",
+                "properties": address_only,
+                "required": ["thought", "address"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="save_building_brief",
+            description="Write the normalized brief back to the Elastic building_briefs index.",
+            parameters_json_schema={
+                "type": "object",
+                "properties": {
+                    "thought": {
+                        "type": "string",
+                        "description": "One short public reasoning line to stream to the UI.",
+                    },
+                    "address": {"type": "string"},
+                    "risk_score": {"type": "number"},
+                    "summary": {"type": "string"},
+                },
+                "required": ["thought", "address", "risk_score", "summary"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="finalize_brief",
+            description="Return the final renter-risk brief after the evidence is gathered and saved.",
+            parameters_json_schema={
+                "type": "object",
+                "properties": {
+                    "thought": {
+                        "type": "string",
+                        "description": "One short public reasoning line to stream to the UI.",
+                    },
+                    "address": {"type": "string"},
+                    "risk_score": {
+                        "type": "number",
+                        "description": "Overall renter risk from 0.0 (safe) to 10.0 (avoid).",
+                    },
+                    "summary": {"type": "string"},
+                    "top_red_flags": {"type": "array", "items": {"type": "string"}},
+                    "questions_to_ask": {"type": "array", "items": {"type": "string"}},
+                    "evidence": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "thought",
+                    "address",
+                    "risk_score",
+                    "summary",
+                    "top_red_flags",
+                    "questions_to_ask",
+                ],
+            },
+        ),
+    ]
+
+
+def _render_model_prompt(*, history: list[dict[str, str]], context: ListingContext) -> str:
+    """Flatten the conversation and tool history into a single prompt."""
+
+    rendered_history = "\n".join(
+        f"{item['role'].upper()}: {item['content']}" for item in history
+    )
+    return (
+        f"{prompts.SYSTEM_PROMPT}\n\n"
+        f"{prompts.render_few_shots()}\n\n"
+        "Listing under investigation:\n"
+        f"- address: {context.address}\n"
+        f"- source: {context.source}\n"
+        f"- listing_url: {context.listing_url or 'none'}\n\n"
+        "Conversation so far:\n"
+        f"{rendered_history}\n\n"
+        "Every tool call must include a short public `thought`. The five read tools are "
+        "independent — request them together in one turn. Then save_building_brief, then "
+        "finalize_brief. Do not answer in plain text."
+    )
+
+
+def _default_thought(tool_name: str) -> str:
+    """Return a fallback public thought when Gemini omits one."""
+
+    defaults = {
+        "search_building_memory": "Checking whether we already have a brief on this building.",
+        "get_hpd_violations": "Pulling building-level housing violations.",
+        "get_311_signals": "Checking nearby quality-of-life complaints.",
+        "search_tenant_sentiment": "Searching tenant chatter for softer warning signs.",
+        "compare_to_neighborhood_baseline": "Comparing this building to its neighborhood.",
+        "save_building_brief": "Saving the normalized brief for fast follow-ups.",
+        "finalize_brief": "I have enough evidence to write the renter brief.",
+    }
+    return defaults.get(tool_name, f"Calling {tool_name}.")
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic stub (offline + replay)
+# --------------------------------------------------------------------------- #
+
+
+def _stub_turn(*, history: list[dict[str, str]], context: ListingContext) -> _Turn:
+    """Return a deterministic tool sequence for tests, offline work, and replay.
+
+    The five read tools are issued in a single turn so the stub mirrors the
+    concurrent fast path the real model is prompted to take, then the brief is
+    saved, then finalized — all grounded in the gathered tool results.
+    """
+
+    done_tools = _completed_tools(history)
+    address = context.address
+
+    if not READ_TOOLS & done_tools:
+        return _Turn(
+            tool_calls=[
+                _ToolCall(
+                    name="search_building_memory",
+                    args={"address": address},
+                    thought="Plan: pull memory, HPD, 311, sentiment, and baseline together.",
+                ),
+                _ToolCall(name="get_hpd_violations", args={"address": address},
+                          thought="Pulling building-level housing violations."),
+                _ToolCall(name="get_311_signals", args={"address": address},
+                          thought="Checking nearby quality-of-life complaints."),
+                _ToolCall(name="search_tenant_sentiment", args={"address": address},
+                          thought="Searching tenant chatter for softer warning signs."),
+                _ToolCall(name="compare_to_neighborhood_baseline", args={"address": address},
+                          thought="Comparing this building to its neighborhood."),
+            ]
+        )
+
+    report = _report_from_history(context=context, history=history)
+
+    if "save_building_brief" not in done_tools:
+        return _Turn(
+            tool_calls=[
+                _ToolCall(
+                    name="save_building_brief",
+                    args={
+                        "address": address,
+                        "risk_score": report.risk_score,
+                        "summary": report.summary,
+                    },
+                    thought="Saving the normalized brief so follow-ups skip the full investigation.",
+                )
+            ]
+        )
+
+    return _Turn(
+        is_final=True,
+        final_thought="I have enough evidence to write the renter brief.",
+        final_payload=report,
+    )
+
+
+def _completed_tools(history: list[dict[str, str]]) -> set[str]:
+    """Return the set of tool names that already produced a result in history."""
+
+    completed: set[str] = set()
+    for item in history:
+        if item["role"] != "tool":
+            continue
+        try:
+            tool_name = json.loads(item["content"]).get("tool")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if isinstance(tool_name, str):
+            completed.add(tool_name)
+    return completed
+
+
+def _latest_result(history: list[dict[str, str]], tool: str) -> dict[str, Any] | None:
+    """Return the most recent result payload for a given tool from history."""
+
+    for item in reversed(history):
+        if item["role"] != "tool":
+            continue
+        try:
+            parsed = json.loads(item["content"])
+        except json.JSONDecodeError:
+            continue
+        if parsed.get("tool") == tool:
+            result = parsed.get("result")
+            return result if isinstance(result, dict) else None
+    return None
+
+
+def _report_from_history(*, context: ListingContext, history: list[dict[str, str]]) -> RiskReport:
+    """Rebuild a grounded renter brief from the tool results already in history."""
+
+    memory = _latest_result(history, "search_building_memory") or {}
+    hpd = _latest_result(history, "get_hpd_violations") or {}
+    complaints = _latest_result(history, "get_311_signals") or {}
+    sentiment = _latest_result(history, "search_tenant_sentiment") or {}
+    baseline = _latest_result(history, "compare_to_neighborhood_baseline") or {}
+
+    return _build_report(
+        context=context,
+        memory=BuildingMemory.model_validate({"address": context.address, "found": False, **memory}),
+        hpd=HPDViolations.model_validate({"address": context.address, "open_violations": 0, **hpd}),
+        complaints=ComplaintSignals.model_validate(
+            {"address": context.address, "complaint_count_90d": 0, "nighttime_noise_share": 0.0, **complaints}
+        ),
+        sentiment=TenantSentiment.model_validate(
+            {"address": context.address, "mentions_found": 0, **sentiment}
+        ),
+        baseline=NeighborhoodComparison.model_validate(
+            {"address": context.address, "complaint_index_vs_zip": 1.0, "summary": "", **baseline}
+        ),
+    )
 
 
 def _build_report(
@@ -296,7 +690,8 @@ def _build_report(
     if baseline.complaint_index_vs_zip > 1.3:
         score += 1.2
         flags.append("complaint density above neighborhood baseline")
-        evidence.append(baseline.summary)
+        if baseline.summary:
+            evidence.append(baseline.summary)
 
     risk_score = round(min(score, 9.8), 1)
     unique_flags = _dedupe(flags)
@@ -337,6 +732,32 @@ def _extract_address_from_url(listing_url: str) -> str | None:
     if not any(char.isdigit() for char in candidate):
         return None
     return candidate.title()
+
+
+def _loose_match(a: str, b: str) -> bool:
+    """Compare two addresses ignoring case, punctuation, and whitespace."""
+
+    def canon(value: str) -> str:
+        return "".join(ch for ch in value.lower() if ch.isalnum())
+
+    return canon(a) == canon(b)
+
+
+def _coerce_float(value: Any, *, default: float | None = None) -> float | None:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
 
 
 def _dedupe(items: list[str]) -> list[str]:

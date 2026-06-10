@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -104,7 +105,7 @@ class ElasticMCPClient:
         body = response.json()
         if "error" in body:
             raise RuntimeError(f"Elastic MCP error calling {name!r}: {body['error']}")
-        return body.get("result", {})
+        return _normalize_mcp_result(body.get("result", {}))
 
 
 async def search_building_memory(
@@ -281,6 +282,54 @@ def _coerce_list(value: Any) -> list[str]:
 def _slugify(value: str) -> str:
     lowered = value.lower()
     return re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
+
+
+def _normalize_mcp_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Agent Builder MCP result shapes into a flat dict.
+
+    An MCP ``tools/call`` response carries the tool output in one of a few
+    shapes: a ``structuredContent`` object, or a ``content`` array of
+    ``{type: "text", text: "<json>"}`` chunks. Custom ES|QL tools in Elastic
+    Agent Builder return their rows as a JSON string in that text channel, so we
+    unwrap and parse it here before the typed wrappers read fields off it.
+    """
+
+    normalized: dict[str, Any] = {}
+    if isinstance(result, dict):
+        normalized.update(result)
+
+    structured = normalized.get("structuredContent")
+    if isinstance(structured, dict):
+        normalized = {**structured, **normalized}
+
+    content = normalized.get("content")
+    if isinstance(content, list):
+        text_chunks = [
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        text = "\n".join(chunk for chunk in text_chunks if chunk).strip()
+        if text:
+            normalized.setdefault("text", text)
+            parsed = _try_parse_json(text)
+            if isinstance(parsed, dict):
+                normalized = {**parsed, **normalized}
+            elif isinstance(parsed, list):
+                normalized.setdefault("rows", parsed)
+    return normalized
+
+
+def _try_parse_json(text: str) -> dict[str, Any] | list[Any] | None:
+    """Parse JSON if the text looks like JSON; otherwise return None."""
+
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "[{":
+        return None
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
 
 
 def _sample_payload(address: str) -> dict[str, Any]:

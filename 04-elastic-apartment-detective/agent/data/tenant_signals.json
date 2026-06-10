@@ -1,0 +1,52 @@
+[
+  {
+    "address": "123 Orchard St, New York, NY 10002",
+    "zip": "10002",
+    "borough": "Manhattan",
+    "source": "reddit",
+    "url": "https://reddit.example/r/AskNYC/comments/orchard-walls",
+    "title": "Thinking about a place on Orchard — is the noise really that bad?",
+    "body": "Lived at 123 Orchard for a year. The walls are paper-thin and there's a bar two doors down, so weekends are rough until 2am. Management was slow whenever the radiator died in January. If you're a light sleeper or work from home, think hard about it.",
+    "posted_at": "2026-01-18T03:12:00"
+  },
+  {
+    "address": "123 Orchard St, New York, NY 10002",
+    "zip": "10002",
+    "borough": "Manhattan",
+    "source": "local-news",
+    "url": "https://lesledger.example/heat-complaints-orchard",
+    "title": "LES tenants organize over recurring winter heat outages",
+    "body": "Residents of several Orchard Street buildings described repeated loss of heat and hot water during the coldest weeks, saying the landlord took days to respond. One tenant said they filed multiple 311 reports before the boiler was fixed.",
+    "posted_at": "2026-02-02T09:30:00"
+  },
+  {
+    "address": "123 Orchard St, New York, NY 10002",
+    "zip": "10002",
+    "borough": "Manhattan",
+    "source": "reddit",
+    "url": "https://reddit.example/r/NYCapartments/comments/orchard-roaches",
+    "title": "Roach situation in old LES tenements?",
+    "body": "Friend in the 123 Orchard building deals with the occasional water bug in the common stairwell. Not a horror story, but the super only sprays after you ask twice. Pretty standard for a pre-war walk-up down there.",
+    "posted_at": "2025-11-22T18:45:00"
+  },
+  {
+    "address": "55 Mott St, New York, NY 10013",
+    "zip": "10013",
+    "borough": "Manhattan",
+    "source": "reddit",
+    "url": "https://reddit.example/r/AskNYC/comments/mott-quiet",
+    "title": "Is Mott Street quiet at night?",
+    "body": "Been at 55 Mott for two years. Honestly pretty calm — the occasional delivery scooter, but no bar noise. Super is responsive. Only gripe is the radiators clank a bit in deep winter.",
+    "posted_at": "2026-03-04T21:10:00"
+  },
+  {
+    "address": "200 Ludlow St, New York, NY 10002",
+    "zip": "10002",
+    "borough": "Manhattan",
+    "source": "local-news",
+    "url": "https://lesledger.example/ludlow-nightlife",
+    "title": "Ludlow nightlife corridor draws repeat noise complaints",
+    "body": "City data shows a cluster of late-night noise complaints along Ludlow Street near several music venues. Residents say weekend crowds spill onto the block well past midnight.",
+    "posted_at": "2026-01-29T11:00:00"
+  }
+]

@@ -29,11 +29,22 @@ class Settings(BaseSettings):
     google_cloud_project: str
     google_cloud_location: str = "us-central1"
     google_application_credentials: str | None = None
-    vertex_model: str = "gemini-2.5-pro"
+    # The investigation is a tool-routing task, not a reasoning-heavy one, so
+    # flash keeps per-turn latency low — which is what the renter feels after
+    # pressing "Investigate". Override to gemini-2.5-pro via env for a deeper
+    # narrative in a specific demo.
+    vertex_model: str = "gemini-2.5-flash"
+    # When true, the planner returns a deterministic tool sequence instead of
+    # calling Gemini. Defaults to true so the app runs end-to-end with no GCP
+    # credentials; set false once Vertex AI access is wired (see SETUP).
+    stub_gemini_responses: bool = True
 
     elastic_mcp_url: HttpUrl
     elastic_mcp_api_key: SecretStr
 
+    # When true, the Elastic tools return seeded sample payloads instead of
+    # hitting the Agent Builder MCP endpoint. Independent of the Gemini stub so
+    # you can run a real Gemini loop against sample data, or vice versa.
     demo_mode: bool = True
     default_city: str = "New York"
     default_state: str = "NY"

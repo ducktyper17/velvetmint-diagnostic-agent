@@ -32,6 +32,11 @@ dev = [
   "ruff>=0.7.0,<1.0",
   "mypy>=1.12.0,<2.0",
 ]
+# Only needed to provision Elastic indices and load NYC Open Data. Kept out of
+# the runtime image — the agent talks to Elastic over MCP, not the ES client.
+ingest = [
+  "elasticsearch>=8.15.0,<9.0",
+]
 
 [project.scripts]
 apartment-detective-agent = "agent.main:run"

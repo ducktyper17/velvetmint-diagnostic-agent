@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, HttpUrl, model_validator
 from sse_starlette.sse import EventSourceResponse
 
-from agent.agent_loop import AgentEvent, build_listing_context, run_agent_loop
+from agent.agent_loop import AgentEvent, build_listing_context, run_agent_loop, run_replay
 from agent.config import Settings, get_settings
 from agent.tools import ElasticMCPClient
 
@@ -54,9 +54,13 @@ class InvestigationRequest(BaseModel):
     listing_url: HttpUrl | None = None
     address: str | None = Field(default=None, min_length=5, max_length=200)
     question: str | None = Field(default=None, min_length=3, max_length=300)
+    replay: bool = Field(
+        default=False,
+        description="Force the deterministic, paced offline run — bulletproof for a live demo.",
+    )
 
     @model_validator(mode="after")
-    def validate_input(self) -> "InvestigationRequest":
+    def validate_input(self) -> InvestigationRequest:
         """Require at least one way to identify the listing."""
 
         if self.listing_url is None and self.address is None:
@@ -123,7 +127,11 @@ async def investigate(
         )
 
         try:
-            async for event in run_agent_loop(context=context, settings=settings, mcp=mcp):
+            if body.replay:
+                stream = run_replay(context=context, settings=settings)
+            else:
+                stream = run_agent_loop(context=context, settings=settings, mcp=mcp)
+            async for event in stream:
                 yield _sse_event(event)
         except Exception as exc:
             log.exception("apartment_detective.loop_crashed", error=str(exc))
