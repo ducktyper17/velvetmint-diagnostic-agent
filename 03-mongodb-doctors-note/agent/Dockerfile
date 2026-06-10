@@ -19,8 +19,10 @@ RUN apt-get update \
 # surprise release at request time. Override MCP_SERVER_ARGS to re-point.
 ARG MONGODB_MCP_VERSION=latest
 RUN npm install -g "mongodb-mcp-server@${MONGODB_MCP_VERSION}"
+# Escape the $ so the literal ${MONGODB_URI} is stored and expanded at
+# runtime by the app (main.lifespan), not emptied at image-build time.
 ENV MCP_SERVER_CMD=mongodb-mcp-server \
-    MCP_SERVER_ARGS="--connection-string ${MONGODB_URI}"
+    MCP_SERVER_ARGS="--connection-string \${MONGODB_URI}"
 
 WORKDIR /app
 

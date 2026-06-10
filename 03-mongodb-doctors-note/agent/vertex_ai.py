@@ -44,7 +44,9 @@ def get_location() -> str:
 def get_gemini_model() -> str:
     """Return the configured Gemini model name."""
 
-    return os.getenv("GEMINI_MODEL", "gemini-2.5-pro").strip() or "gemini-2.5-pro"
+    # Hackathon requires Gemini 3; gemini-3.1-pro-preview is the current
+    # Gemini 3 model on Vertex (gemini-3-pro-preview was retired 2026-03).
+    return os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview").strip() or "gemini-3.1-pro-preview"
 
 
 def get_embedding_model() -> str:
