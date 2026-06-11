@@ -86,6 +86,49 @@ async def test_brief_is_saved_before_finalize() -> None:
     assert tool_calls.index("get_hpd_violations") < save_idx
 
 
+async def _collect_with_question(listing_url: str, question: str, settings: Settings) -> list:
+    context = build_listing_context(
+        address=None, listing_url=listing_url, question=question, settings=settings
+    )
+    mcp = ElasticMCPClient(settings)
+    try:
+        return [event async for event in run_agent_loop(context=context, settings=settings, mcp=mcp)]
+    finally:
+        await mcp.aclose()
+
+
+@pytest.mark.asyncio
+async def test_followup_reuses_saved_brief_without_full_investigation() -> None:
+    settings = _settings()
+    events = await _collect_with_question(
+        "https://streeteasy.example/listing/123-orchard-st-new-york-ny-10002",
+        "What's the biggest concern if I work nights?",
+        settings,
+    )
+
+    tool_calls = [e.payload["name"] for e in events if e.type == "tool_call"]
+    # Memory-reuse fast path: reads the brief + one fresh signal, nothing else.
+    assert tool_calls == ["search_building_memory", "get_311_signals"]
+    assert "search_tenant_sentiment" not in tool_calls
+    assert "save_building_brief" not in tool_calls
+
+    final = next(e for e in events if e.type == "final_report")
+    assert "saved brief" in final.payload["summary"].lower()
+    assert final.payload["risk_score"] > 0
+
+
+@pytest.mark.asyncio
+async def test_followup_on_unseen_building_falls_back_to_full_investigation() -> None:
+    # 55 Mott has no prior brief in demo data, so a follow-up must investigate.
+    settings = _settings()
+    events = await _collect_with_question(
+        "https://zillow.example/homes/55-mott-st", "Is it quiet at night?", settings
+    )
+    tool_calls = [e.payload["name"] for e in events if e.type == "tool_call"]
+    assert "compare_to_neighborhood_baseline" in tool_calls  # full investigation ran
+    assert "final_report" in [e.type for e in events]
+
+
 @pytest.mark.asyncio
 async def test_unknown_address_in_non_demo_requires_address() -> None:
     settings = _settings(demo_mode=False)

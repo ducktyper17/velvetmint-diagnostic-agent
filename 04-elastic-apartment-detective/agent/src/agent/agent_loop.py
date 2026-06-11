@@ -241,7 +241,7 @@ async def _dispatch_tool(
                 await save_building_brief(
                     mcp,
                     address=address,
-                    risk_score=_coerce_float(call.args.get("risk_score"), default=0.0),
+                    risk_score=_coerce_float(call.args.get("risk_score"), default=0.0) or 0.0,
                     summary=str(call.args.get("summary", "")),
                 )
             ).model_dump()
@@ -357,10 +357,11 @@ async def _call_gemini(
 
     turn = _Turn()
     for function_call in function_calls:
+        name = function_call.name or ""
         args = dict(function_call.args or {})
-        thought = str(args.pop("thought", "")).strip() or _default_thought(function_call.name)
+        thought = str(args.pop("thought", "")).strip() or _default_thought(name)
 
-        if function_call.name == "finalize_brief":
+        if name == "finalize_brief":
             turn.is_final = True
             turn.final_thought = thought
             turn.final_payload = RiskReport(
@@ -374,7 +375,7 @@ async def _call_gemini(
             )
             continue
 
-        turn.tool_calls.append(_ToolCall(name=function_call.name, args=args, thought=thought))
+        turn.tool_calls.append(_ToolCall(name=name, args=args, thought=thought))
 
     return turn
 
@@ -536,35 +537,45 @@ def _default_thought(tool_name: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+# Order the five read tools are issued in for a fresh investigation.
+READ_TOOL_ORDER = [
+    "search_building_memory",
+    "get_hpd_violations",
+    "get_311_signals",
+    "search_tenant_sentiment",
+    "compare_to_neighborhood_baseline",
+]
+
+
 def _stub_turn(*, history: list[dict[str, str]], context: ListingContext) -> _Turn:
     """Return a deterministic tool sequence for tests, offline work, and replay.
 
-    The five read tools are issued in a single turn so the stub mirrors the
-    concurrent fast path the real model is prompted to take, then the brief is
-    saved, then finalized — all grounded in the gathered tool results.
+    A fresh investigation issues the five read tools in a single turn (mirroring
+    the concurrent fast path the real model takes), then saves the brief, then
+    finalizes — all grounded in the gathered results. A follow-up question takes
+    the memory-reuse fast path instead: read the saved brief, pull one fresh
+    signal, and answer — no full re-investigation.
     """
 
     done_tools = _completed_tools(history)
     address = context.address
 
-    if not READ_TOOLS & done_tools:
-        return _Turn(
-            tool_calls=[
-                _ToolCall(
-                    name="search_building_memory",
-                    args={"address": address},
-                    thought="Plan: pull memory, HPD, 311, sentiment, and baseline together.",
-                ),
-                _ToolCall(name="get_hpd_violations", args={"address": address},
-                          thought="Pulling building-level housing violations."),
-                _ToolCall(name="get_311_signals", args={"address": address},
-                          thought="Checking nearby quality-of-life complaints."),
-                _ToolCall(name="search_tenant_sentiment", args={"address": address},
-                          thought="Searching tenant chatter for softer warning signs."),
-                _ToolCall(name="compare_to_neighborhood_baseline", args={"address": address},
-                          thought="Comparing this building to its neighborhood."),
-            ]
-        )
+    if context.user_question:
+        followup = _followup_stub(history=history, context=context, done=done_tools)
+        if followup is not None:
+            return followup
+
+    missing = [t for t in READ_TOOL_ORDER if t not in done_tools]
+    if missing:
+        calls: list[_ToolCall] = []
+        for i, name in enumerate(missing):
+            thought = (
+                "Plan: pull memory, HPD, 311, sentiment, and baseline together."
+                if i == 0 and len(missing) == len(READ_TOOL_ORDER)
+                else _default_thought(name)
+            )
+            calls.append(_ToolCall(name=name, args={"address": address}, thought=thought))
+        return _Turn(tool_calls=calls)
 
     report = _report_from_history(context=context, history=history)
 
@@ -587,6 +598,97 @@ def _stub_turn(*, history: list[dict[str, str]], context: ListingContext) -> _Tu
         is_final=True,
         final_thought="I have enough evidence to write the renter brief.",
         final_payload=report,
+    )
+
+
+def _followup_stub(
+    *, history: list[dict[str, str]], context: ListingContext, done: set[str]
+) -> _Turn | None:
+    """Memory-reuse fast path for a follow-up question.
+
+    Returns ``None`` to fall back to a full investigation when there is no saved
+    brief for this building yet (so a first-ever follow-up still works).
+    """
+
+    if "search_building_memory" not in done:
+        return _Turn(
+            tool_calls=[
+                _ToolCall(
+                    name="search_building_memory",
+                    args={"address": context.address},
+                    thought="Follow-up — reading our saved Elastic brief for this building first.",
+                )
+            ]
+        )
+
+    memory = _latest_result(history, "search_building_memory") or {}
+    if not memory.get("found"):
+        return None  # no prior brief; fall through to a full investigation
+
+    if "get_311_signals" not in done:
+        return _Turn(
+            tool_calls=[
+                _ToolCall(
+                    name="get_311_signals",
+                    args={"address": context.address},
+                    thought="Found a saved brief. Pulling the latest 311 signal to answer the question.",
+                )
+            ]
+        )
+
+    return _Turn(
+        is_final=True,
+        final_thought="Answering from the saved brief plus the latest signal — no need to re-investigate.",
+        final_payload=_followup_report(context=context, history=history),
+    )
+
+
+def _followup_report(*, context: ListingContext, history: list[dict[str, str]]) -> RiskReport:
+    """Build a focused brief that reuses the saved memory and answers the question."""
+
+    memory = BuildingMemory.model_validate(
+        {"address": context.address, "found": False, **(_latest_result(history, "search_building_memory") or {})}
+    )
+    complaints = ComplaintSignals.model_validate(
+        {
+            "address": context.address,
+            "complaint_count_90d": 0,
+            "nighttime_noise_share": 0.0,
+            **(_latest_result(history, "get_311_signals") or {}),
+        }
+    )
+
+    question = (context.user_question or "").strip()
+    risk = memory.prior_risk_score if memory.prior_risk_score is not None else 5.0
+    flags = _dedupe(list(memory.prior_flags))[:3] or ["limited public signals"]
+    night_pct = round(complaints.nighttime_noise_share * 100)
+
+    summary = f"Reusing the saved brief for {context.address} (risk {round(float(risk), 1)}/10)."
+    if memory.summary:
+        summary += f" {memory.summary}"
+    if question:
+        summary += f" On your question — “{question}” — the strongest signal is {flags[0]}."
+
+    evidence: list[str] = []
+    if memory.summary:
+        evidence.append(memory.summary)
+    evidence.append(
+        f"{complaints.complaint_count_90d} complaints in the last 90 days; "
+        f"{night_pct}% of nearby noise is late-night."
+    )
+
+    return RiskReport(
+        address=context.address,
+        listing_source=context.source,
+        risk_score=round(float(risk), 1),
+        summary=summary,
+        top_red_flags=flags,
+        questions_to_ask=[
+            "How were the most recent building complaints resolved, and when?",
+            "What is the plan for noise mitigation and quiet-hours enforcement?",
+            "Are quiet hours actually enforced on weekends?",
+        ],
+        evidence=_dedupe(evidence)[:6],
     )
 
 

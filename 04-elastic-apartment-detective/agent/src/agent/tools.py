@@ -327,9 +327,12 @@ def _try_parse_json(text: str) -> dict[str, Any] | list[Any] | None:
     if not stripped or stripped[0] not in "[{":
         return None
     try:
-        return json.loads(stripped)
+        parsed = json.loads(stripped)
     except json.JSONDecodeError:
         return None
+    if isinstance(parsed, (dict, list)):
+        return parsed
+    return None
 
 
 def _sample_payload(address: str) -> dict[str, Any]:

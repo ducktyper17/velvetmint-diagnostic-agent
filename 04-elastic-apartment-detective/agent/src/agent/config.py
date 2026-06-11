@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     default_city: str = "New York"
     default_state: str = "NY"
     default_zip: str = "10002"
-    demo_listing_url: HttpUrl = "https://streeteasy.example/listing/123-orchard-st-new-york-ny-10002"
+    demo_listing_url: str = "https://streeteasy.example/listing/123-orchard-st-new-york-ny-10002"
     demo_address: str = "123 Orchard St, New York, NY 10002"
 
     @property
@@ -63,4 +63,4 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return a cached settings instance."""
 
-    return Settings()  # type: ignore[call-arg]
+    return Settings()
