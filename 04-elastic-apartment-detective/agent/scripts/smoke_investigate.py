@@ -40,6 +40,7 @@ async def main() -> int:
                 print(f"  ← {payload['name']}: {payload['result']}")
             elif event.type == "final_report":
                 print(f"\n★ risk {payload['risk_score']}/10 — {payload['summary']}")
+                print(f"  confidence: {payload['confidence']} — {payload['confidence_rationale']}")
                 print(f"  red flags: {payload['top_red_flags']}")
             elif event.type == "error":
                 print(f"  ✗ {payload.get('error')}")

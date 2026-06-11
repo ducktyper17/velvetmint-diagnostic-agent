@@ -3,6 +3,8 @@
 export type FinalReport = {
   listing: { address: string; source: string; listing_url: string | null };
   risk_score: number;
+  confidence?: "high" | "moderate" | "low";
+  confidence_rationale?: string;
   summary: string;
   top_red_flags: string[];
   questions_to_ask: string[];
@@ -55,6 +57,12 @@ export function RiskBrief({
           </div>
           <ScoreDial score={report.risk_score} tone={band.dial} />
         </div>
+        {report.confidence && (
+          <ConfidenceChip
+            level={report.confidence}
+            rationale={report.confidence_rationale}
+          />
+        )}
         <p className="text-sm text-zinc-300 mt-3 leading-relaxed">{report.summary}</p>
       </header>
 
@@ -99,6 +107,33 @@ export function RiskBrief({
         index — follow-up questions reuse it instead of re-investigating.
       </footer>
     </section>
+  );
+}
+
+function ConfidenceChip({
+  level,
+  rationale,
+}: {
+  level: "high" | "moderate" | "low";
+  rationale?: string;
+}) {
+  const tone = {
+    high: "bg-teal-500/15 text-teal-300 ring-teal-500/30",
+    moderate: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+    low: "bg-zinc-700/40 text-zinc-300 ring-zinc-600/40",
+  }[level];
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ring-1 ${tone}`}
+        title="Derived from how many independent Elastic sources corroborate — not guessed by the model."
+      >
+        {level} confidence
+      </span>
+      {rationale && (
+        <span className="text-[11px] text-zinc-500 leading-tight">{rationale}</span>
+      )}
+    </div>
   );
 }
 

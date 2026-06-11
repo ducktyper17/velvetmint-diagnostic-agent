@@ -126,6 +126,11 @@ async def run_agent_loop(
                 )
                 return
             report = turn.final_payload
+            # Confidence is derived deterministically from how many independent
+            # Elastic sources corroborate — never invented by the model. This is
+            # path-agnostic: it reads the same gathered evidence whether the turn
+            # came from live Gemini or the offline stub.
+            confidence, confidence_rationale = _confidence_from_history(history)
             yield AgentEvent("thought", {"text": turn.final_thought}, iteration)
             yield AgentEvent(
                 "final_report",
@@ -136,6 +141,8 @@ async def run_agent_loop(
                         "listing_url": context.listing_url,
                     },
                     "risk_score": report.risk_score,
+                    "confidence": confidence,
+                    "confidence_rationale": confidence_rationale,
                     "summary": report.summary,
                     "top_red_flags": report.top_red_flags,
                     "questions_to_ask": report.questions_to_ask,
@@ -722,6 +729,58 @@ def _latest_result(history: list[dict[str, str]], tool: str) -> dict[str, Any] |
             result = parsed.get("result")
             return result if isinstance(result, dict) else None
     return None
+
+
+def _confidence_from_history(history: list[dict[str, str]]) -> tuple[str, str]:
+    """Derive a confidence label + rationale from the gathered evidence.
+
+    Confidence reflects how many *independent* public sources strongly
+    corroborate the picture — it is computed from the tool results, never
+    guessed by the model. Risk score answers "how bad"; confidence answers
+    "how sure are we". A building with one weak signal reads "low" so the brief
+    stays honest about thin evidence (operating rule #6).
+    """
+
+    memory = _latest_result(history, "search_building_memory") or {}
+    hpd = _latest_result(history, "get_hpd_violations") or {}
+    complaints = _latest_result(history, "get_311_signals") or {}
+    sentiment = _latest_result(history, "search_tenant_sentiment") or {}
+    baseline = _latest_result(history, "compare_to_neighborhood_baseline") or {}
+
+    open_v = int(_coerce_float(hpd.get("open_violations"), default=0.0) or 0)
+    c90 = int(_coerce_float(complaints.get("complaint_count_90d"), default=0.0) or 0)
+    mentions = int(_coerce_float(sentiment.get("mentions_found"), default=0.0) or 0)
+    index = _coerce_float(baseline.get("complaint_index_vs_zip"), default=0.0) or 0.0
+
+    strong: list[str] = []
+    if open_v >= 3:
+        strong.append(f"{open_v} open HPD violations")
+    if c90 >= 10:
+        strong.append(f"{c90} complaints in 90 days")
+    if mentions >= 2:
+        strong.append(f"{mentions} tenant reports")
+    if index > 1.3:
+        strong.append("above-baseline complaint density")
+    if memory.get("found"):
+        strong.append("a prior saved brief")
+
+    n = len(strong)
+    label = "high" if n >= 3 else "moderate" if n >= 1 else "low"
+
+    if n >= 1:
+        plural = "s" if n != 1 else ""
+        return label, f"{n} independent source{plural} corroborate: {', '.join(strong)}."
+
+    weak: list[str] = []
+    if open_v:
+        weak.append(f"{open_v} HPD violation{'s' if open_v != 1 else ''}")
+    if c90:
+        weak.append(f"{c90} recent complaints")
+    if mentions:
+        weak.append(f"{mentions} tenant mention{'s' if mentions != 1 else ''}")
+    if weak:
+        return label, f"Evidence is thin — only weak signals ({', '.join(weak)}) with no strong corroboration."
+    return label, "No meaningful public signals returned; treat this as low-evidence."
 
 
 def _report_from_history(*, context: ListingContext, history: list[dict[str, str]]) -> RiskReport:

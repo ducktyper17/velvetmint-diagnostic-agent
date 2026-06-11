@@ -90,6 +90,8 @@ export default function Page() {
       setFinalReport({
         listing: data.listing,
         risk_score: data.risk_score,
+        confidence: data.confidence,
+        confidence_rationale: data.confidence_rationale,
         summary: data.summary,
         top_red_flags: data.top_red_flags || [],
         questions_to_ask: data.questions_to_ask || [],

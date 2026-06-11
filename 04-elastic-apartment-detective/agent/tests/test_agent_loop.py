@@ -53,6 +53,25 @@ async def test_high_risk_demo_listing_finalizes_with_evidence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_confidence_is_derived_from_corroborating_sources() -> None:
+    settings = _settings()
+
+    # Seeded high-risk building: 5 independent sources corroborate -> high.
+    strong = await _collect(
+        "https://streeteasy.example/listing/123-orchard-st-new-york-ny-10002", settings
+    )
+    strong_final = next(e for e in strong if e.type == "final_report")
+    assert strong_final.payload["confidence"] == "high"
+    assert "corroborate" in strong_final.payload["confidence_rationale"]
+
+    # Thin building: only weak signals, no strong corroboration -> low + honest note.
+    thin = await _collect("https://zillow.example/homes/55-mott-st", settings)
+    thin_final = next(e for e in thin if e.type == "final_report")
+    assert thin_final.payload["confidence"] == "low"
+    assert "thin" in thin_final.payload["confidence_rationale"].lower()
+
+
+@pytest.mark.asyncio
 async def test_reads_fire_in_a_single_parallel_turn() -> None:
     settings = _settings()
     events = await _collect(
