@@ -54,6 +54,8 @@ py-modules = [
   "extractor",
   "retriever",
   "responder",
+  "verifier",
+  "orchestrator",
   "prompts",
   "seed_data",
   "vertex_ai",

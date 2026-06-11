@@ -41,6 +41,10 @@ You give it a medical report — PDF, image, or pasted text. The agent:
    (e.g. "TIRADS 3 nodules carry a roughly 5% malignancy risk in published
    series"), three specific questions to ask your clinician, and the likely
    follow-up timeline.
+4. **Checks its own work.** Before showing you anything, the agent reviews
+   its draft against the sources it retrieved — is every statistic actually
+   grounded? did it slip into diagnostic language? If it finds a problem, it
+   revises once and re-checks. You can watch these steps in the UI.
 
 It **never** says "you have X" or "you don't have X." That rule is baked into
 the system prompt, enforced by the response schema, and double-checked by a
@@ -71,10 +75,19 @@ The agent is four clean components behind a thin FastAPI service:
   non-empty legal disclaimer; the follow-up must reference the clinician), and
   a high-precision regex gate catches any diagnostic language that slips past
   the prompt and routes to a safe fallback.
-- **`seed_data.py`** — seeds the Atlas collections with clearly-labeled sample
-  literature, guidelines, and fabricated patient-experience snippets across
-  four conditions, and creates the Atlas Vector Search index with dimensions
-  centralized so they can never drift from the embedding model.
+- **`orchestrator.py` + `verifier.py`** — the agent loop. After drafting, the
+  agent *verifies its own output* against the retrieved evidence (Gemini
+  reviewer, with a deterministic percent-grounding fallback): every statistic
+  must appear in a source, and no diagnostic language is allowed. On a failed
+  check it revises once and re-verifies, then keeps the safer version. Each
+  step (retrieve → draft → verify → revise) is surfaced to the UI so the
+  reasoning is visible. This is what makes it an agent, not a one-shot RAG call.
+- **`scripts/ingest_pubmed.py` + `seed_data.py`** — the knowledge base is
+  built from **real published abstracts** pulled from PubMed via NCBI
+  E-utilities across the supported conditions, plus guideline excerpts and
+  clearly-labeled patient-experience snippets. `seed_data.py` embeds each
+  document with Vertex and creates the Atlas Vector Search index, with the
+  vector dimension centralized so it can never drift from the embedding model.
 
 The single-page UI is served by the same FastAPI app (one Cloud Run service,
 no separate frontend build, no CORS), and surfaces the Atlas retrieval results

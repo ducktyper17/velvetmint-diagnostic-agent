@@ -166,7 +166,7 @@ async def retrieve(
         pipeline_lit = build_pipeline(
             query_vector=query_vector,
             condition=extracted.primary_condition,
-            severity_tier=extracted.severity_tier_guess,
+            severity_tier=None,  # a paper applies across severity tiers, like guidelines
             k=k,
         )
         pipeline_guide = build_pipeline(

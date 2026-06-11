@@ -25,8 +25,10 @@ breadth before any public demo.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 # We import pymongo lazily and only for the index bootstrap path so that
@@ -331,6 +333,23 @@ def _vector_index_definition(num_dims: int) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _load_literature() -> list[dict[str, Any]]:
+    """Prefer the real PubMed corpus (scripts/ingest_pubmed.py) if present.
+
+    Falls back to the labeled sample abstracts so a first-time seed still
+    works before anyone runs the ingestion step.
+    """
+
+    corpus = Path(__file__).resolve().parent / "corpus" / "literature.json"
+    if corpus.exists():
+        docs = json.loads(corpus.read_text(encoding="utf-8"))
+        if docs:
+            print(f"[seed_data] using real PubMed corpus: {len(docs)} abstracts")
+            return docs
+    print("[seed_data] no corpus/literature.json found; using sample abstracts")
+    return SAMPLE_LITERATURE
+
+
 def main() -> None:
     uri = os.environ["MONGODB_URI"]
     db_name = os.getenv("MONGODB_DB", "doctors_note")
@@ -340,7 +359,7 @@ def main() -> None:
     db = client[db_name]
 
     plan = [
-        (os.getenv("MONGODB_COLLECTION_LITERATURE", "literature"), SAMPLE_LITERATURE),
+        (os.getenv("MONGODB_COLLECTION_LITERATURE", "literature"), _load_literature()),
         (os.getenv("MONGODB_COLLECTION_GUIDELINES", "guidelines"), SAMPLE_GUIDELINES),
         (os.getenv("MONGODB_COLLECTION_FORUM", "forum_posts"), SAMPLE_FORUM),
     ]

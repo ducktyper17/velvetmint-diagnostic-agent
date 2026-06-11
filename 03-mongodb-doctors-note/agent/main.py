@@ -24,9 +24,9 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from extractor import extract_from_bytes, extract_from_text
+from orchestrator import run_agent
 from prompts import DISCLAIMER_PLAIN
-from responder import DecodedReport, respond
-from retriever import retrieve
+from responder import DecodedReport
 
 load_dotenv()
 
@@ -129,8 +129,7 @@ async def decode(
             detail="Input does not appear to be a medical report.",
         )
 
-    bundle = await retrieve(extracted, session=request.app.state.mcp_session)
-    return await respond(extracted, bundle)
+    return await run_agent(extracted, session=request.app.state.mcp_session)
 
 
 @app.post("/vault/save")

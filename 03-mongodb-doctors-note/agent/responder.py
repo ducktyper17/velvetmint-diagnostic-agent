@@ -21,7 +21,7 @@ from google.genai import types
 from pydantic import BaseModel, Field, model_validator
 
 from extractor import ExtractedReport
-from prompts import DISCLAIMER_LONG, SYNTHESIS_SYSTEM_PROMPT
+from prompts import DISCLAIMER_LONG, REVISION_INSTRUCTION, SYNTHESIS_SYSTEM_PROMPT
 from retriever import RetrievalBundle, RetrievedDoc
 from vertex_ai import get_client, get_embedding_model, get_gemini_model
 
@@ -202,9 +202,16 @@ class DecodedReport(BaseModel):
 
 
 async def respond(
-    extracted: ExtractedReport, bundle: RetrievalBundle
+    extracted: ExtractedReport,
+    bundle: RetrievalBundle,
+    *,
+    critique: list[str] | None = None,
 ) -> DecodedReport:
-    """Produce the final structured response with a safe fallback."""
+    """Produce the final structured response with a safe fallback.
+
+    When ``critique`` is provided, this is a *revision* pass: the reviewer's
+    issues are appended to the synthesis prompt so the model corrects them.
+    """
 
     _ = SYNTHESIS_SYSTEM_PROMPT  # imported so missing prompt fails at import
     try:
@@ -212,6 +219,7 @@ async def respond(
             _generate_response,
             extracted=extracted,
             bundle=bundle,
+            critique=critique,
         )
         decoded = DecodedReport.model_validate_json(response.text or "")
 
@@ -268,6 +276,7 @@ def _generate_response(
     *,
     extracted: ExtractedReport,
     bundle: RetrievalBundle,
+    critique: list[str] | None = None,
 ):
     """Synchronous SDK call used from :func:`respond`."""
 
@@ -278,8 +287,16 @@ def _generate_response(
         },
         indent=2,
     )
+    system_instruction = SYNTHESIS_SYSTEM_PROMPT
+    if critique:
+        bullets = "\n".join(f"- {issue}" for issue in critique)
+        system_instruction = (
+            SYNTHESIS_SYSTEM_PROMPT
+            + "\n\n"
+            + REVISION_INSTRUCTION.format(issues=bullets)
+        )
     config = types.GenerateContentConfig(
-        system_instruction=SYNTHESIS_SYSTEM_PROMPT,
+        system_instruction=system_instruction,
         response_mime_type="application/json",
         temperature=0.2,
     )

@@ -23,8 +23,11 @@ source .venv/bin/activate            # already created
 # Edit .env: set MONGODB_URI and GOOGLE_CLOUD_PROJECT to real values.
 gcloud auth application-default login # gives Vertex local credentials
 
-python seed_data.py                  # writes docs + builds Atlas vector indexes
+python scripts/ingest_pubmed.py --per 8  # pull REAL PubMed abstracts (no creds needed)
+python seed_data.py                  # embeds the corpus + builds Atlas vector indexes
 # Wait ~1 min for the Atlas index to finish building (status in Atlas UI).
+# (seed_data prefers corpus/literature.json if present; a real one is already
+#  committed, so this step ships real literature out of the box.)
 
 uvicorn main:app --port 8080
 # Open http://localhost:8080, click "Try: thyroid ultrasound", Explain.
