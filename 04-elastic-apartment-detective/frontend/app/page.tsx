@@ -12,6 +12,9 @@ const DEMO_URL =
 export default function Page() {
   const [listingUrl, setListingUrl] = useState(DEMO_URL);
   const [question, setQuestion] = useState("");
+  // Replay paces the stream at a watchable speed for demos/recording. On by
+  // default; uncheck for a live, full-speed run.
+  const [replay, setReplay] = useState(true);
   const [status, setStatus] = useState<"idle" | "running" | "complete" | "failed">("idle");
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [finalReport, setFinalReport] = useState<FinalReport>(null);
@@ -34,6 +37,7 @@ export default function Page() {
       const body = JSON.stringify({
         listing_url: listingUrl || undefined,
         question: (followUp ?? question) || undefined,
+        replay,
       });
 
       // EventSource can't POST, so we POST with fetch and read the SSE stream
@@ -119,7 +123,9 @@ export default function Page() {
       <Header
         listingUrl={listingUrl}
         status={status}
+        replay={replay}
         onListingUrl={setListingUrl}
+        onReplay={setReplay}
         onStart={() => startInvestigation()}
       />
       <main className="grid grid-cols-12 gap-4 p-4 content-start max-w-screen-2xl mx-auto w-full">
@@ -149,7 +155,9 @@ export default function Page() {
 function Header(props: {
   listingUrl: string;
   status: string;
+  replay: boolean;
   onListingUrl: (v: string) => void;
+  onReplay: (v: boolean) => void;
   onStart: () => void;
 }) {
   return (
@@ -176,6 +184,18 @@ function Header(props: {
           />
         </label>
         <StatusPill status={props.status} />
+        <label
+          className="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer select-none"
+          title="Deterministic, paced offline run — bulletproof and watchable for a recording"
+        >
+          <input
+            type="checkbox"
+            checked={props.replay}
+            onChange={(e) => props.onReplay(e.target.checked)}
+            className="accent-bondi-500"
+          />
+          replay
+        </label>
         <button
           className="rounded-md bg-bondi-500/90 hover:bg-bondi-500 text-ink-950 font-medium text-sm px-4 py-2 transition disabled:opacity-50"
           onClick={props.onStart}
