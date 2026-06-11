@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -13,7 +11,6 @@ from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from agent.config import Settings
-
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +93,15 @@ class DynatraceMCPClient:
         body = response.json()
         if "error" in body:
             raise RuntimeError(f"MCP error calling {name!r}: {body['error']}")
-        return _normalize_mcp_result(body.get("result", {}))
+        result = _normalize_mcp_result(body.get("result", {}))
+        # The platform MCP gateway reports tool-level failures (bad args, missing
+        # scope, unknown tool) inside result.content with isError=true rather than
+        # as a JSON-RPC error. Surface those so _call_tool_variants can fall back.
+        if result.get("isError"):
+            raise RuntimeError(
+                f"MCP tool {name!r} returned error: {result.get('text') or result}"
+            )
+        return result
 
 
 async def query_runtime_signals(
@@ -118,15 +123,16 @@ async def query_runtime_signals(
             dql=dql,
         )
 
-    raw = await _call_tool_with_fallbacks(
+    raw = await _call_tool_variants(
         client,
-        "execute_dql",
         [
-            {"query": dql, "dtClientContext": "agent-reliability-guard"},
-            {"dql": dql, "dtClientContext": "agent-reliability-guard"},
-            {"statement": dql, "dtClientContext": "agent-reliability-guard"},
-            {"query": dql},
-            {"dql": dql},
+            # Live platform MCP gateway tool (verified on tenant rzw85677).
+            ("execute-dql", {"dqlQueryString": dql}),
+            # Legacy / alternate builds of the standalone Dynatrace MCP server.
+            ("execute_dql", {"query": dql, "dtClientContext": "agent-reliability-guard"}),
+            ("execute_dql", {"dql": dql, "dtClientContext": "agent-reliability-guard"}),
+            ("execute_dql", {"statement": dql}),
+            ("execute_dql", {"query": dql}),
         ],
     )
     rows = _extract_rows(raw)
@@ -154,17 +160,22 @@ async def run_change_analysis(
     if client._settings.stub_dynatrace_tools:
         return _stub_change_analysis()
 
-    timeframe = f"{lookback_minutes}m"
     analyzer_name = client._settings.dynatrace_change_analyzer_name
-    parameters = _analyzer_parameters(service_name=service_name, release_id=release_id)
-    raw = await _call_tool_with_fallbacks(
+    timeseries = _build_timeseries_query(
+        service_name=service_name, lookback_minutes=lookback_minutes, metric="p95_latency_ms"
+    )
+    general = _general_parameters(lookback_minutes)
+    raw = await _call_tool_variants(
         client,
-        "execute_davis_analyzer",
         [
-            {"name": analyzer_name, "timeframe": timeframe, "input": parameters},
-            {"analyzer_name": analyzer_name, "timeframe": timeframe, "input": parameters},
-            {"name": analyzer_name, "timeframe": timeframe, "parameters": parameters},
-            {"analyzer_id": analyzer_name, "timeframe": timeframe, "parameters": parameters},
+            # Live platform MCP gateway: dedicated changepoint analyzer.
+            (
+                "timeseries-novelty-detection",
+                {"generalParameters": general, "timeSeriesData": timeseries},
+            ),
+            (analyzer_name, {"generalParameters": general, "timeSeriesData": timeseries}),
+            # Legacy generic Davis analyzer surface.
+            ("execute_davis_analyzer", {"name": analyzer_name, "timeframe": f"{lookback_minutes}m", "input": timeseries}),
         ],
     )
     return AnalyzerResult(
@@ -189,17 +200,22 @@ async def forecast_blast_radius(
     if client._settings.stub_dynatrace_tools:
         return _stub_forecast()
 
-    timeframe = f"{lookback_minutes}m"
     analyzer_name = client._settings.dynatrace_forecast_analyzer_name
-    parameters = _analyzer_parameters(service_name=service_name, release_id=release_id)
-    raw = await _call_tool_with_fallbacks(
+    timeseries = _build_timeseries_query(
+        service_name=service_name, lookback_minutes=lookback_minutes, metric="tokens_per_request"
+    )
+    general = _general_parameters(lookback_minutes)
+    raw = await _call_tool_variants(
         client,
-        "execute_davis_analyzer",
         [
-            {"name": analyzer_name, "timeframe": timeframe, "input": parameters},
-            {"analyzer_name": analyzer_name, "timeframe": timeframe, "input": parameters},
-            {"name": analyzer_name, "timeframe": timeframe, "parameters": parameters},
-            {"analyzer_id": analyzer_name, "timeframe": timeframe, "parameters": parameters},
+            # Live platform MCP gateway: dedicated forecasting analyzer.
+            (
+                "timeseries-forecast",
+                {"generalParameters": general, "query": timeseries, "forecastHorizon": 100},
+            ),
+            (analyzer_name, {"generalParameters": general, "query": timeseries, "forecastHorizon": 100}),
+            # Legacy generic Davis analyzer surface.
+            ("execute_davis_analyzer", {"name": analyzer_name, "timeframe": f"{lookback_minutes}m", "input": timeseries}),
         ],
     )
     return AnalyzerResult(
@@ -223,16 +239,23 @@ async def draft_notebook(
     if client._settings.stub_dynatrace_tools:
         return _stub_notebook(client, title)
 
-    raw = await _call_tool_with_fallbacks(
-        client,
-        "create_dynatrace_notebook",
-        [
-            {"title": title, "content": summary},
-            {"name": title, "content": summary},
-            {"title": title, "markdown": summary},
-            {"name": title, "markdown": summary},
-        ],
-    )
+    # The platform MCP gateway exposes read-only document tools (find-documents)
+    # but no notebook-creation tool, so we try the legacy standalone-server tool
+    # name and gracefully fall back to a deterministic notebook record (pointing
+    # at the real tenant URL) when it is not available. Creating a real notebook
+    # would require the Documents REST API directly, outside MCP.
+    try:
+        raw = await _call_tool_variants(
+            client,
+            [
+                ("create_dynatrace_notebook", {"title": title, "content": summary}),
+                ("create_dynatrace_notebook", {"name": title, "markdown": summary}),
+            ],
+        )
+    except Exception:
+        log.info("draft_notebook.no_mcp_tool_falling_back_to_stub")
+        return _stub_notebook(client, title)
+
     notebook_id = str(raw.get("id") or raw.get("notebook_id") or "unknown-notebook")
     url = str(raw.get("url") or raw.get("link") or _notebook_fallback_url(client, title))
     return NotebookResult(
@@ -255,27 +278,26 @@ async def notify_owner(
     if client._settings.stub_dynatrace_tools:
         return _stub_notification(channel=channel, summary=summary)
 
+    # Neither a Slack tool nor a workflow-notification tool is exposed on the
+    # platform MCP gateway. Try the legacy standalone-server tool names, then
+    # fall back to a deterministic queued notification. A real alert would use
+    # the Workflows REST API directly, outside MCP.
     try:
-        raw = await _call_tool_with_fallbacks(
+        raw = await _call_tool_variants(
             client,
-            "send_slack_message",
             [
-                {"channel": channel, "message": summary},
-                {"channelName": channel, "message": summary},
-                {"channel": channel, "text": summary},
+                ("send_slack_message", {"channel": channel, "message": summary}),
+                ("send_slack_message", {"channelName": channel, "message": summary}),
+                (
+                    "create_workflow_for_notification",
+                    {"title": "Agent Reliability Guard alert", "channel": channel, "message": summary},
+                ),
             ],
         )
         delivery = str(raw.get("status") or raw.get("delivery") or "queued")
     except Exception:
-        raw = await _call_tool_with_fallbacks(
-            client,
-            "create_workflow_for_notification",
-            [
-                {"title": "Agent Reliability Guard alert", "channel": channel, "message": summary},
-                {"name": "Agent Reliability Guard alert", "channel": channel, "message": summary},
-            ],
-        )
-        delivery = str(raw.get("status") or raw.get("delivery") or "workflow_created")
+        log.info("notify_owner.no_mcp_tool_falling_back_to_stub")
+        return _stub_notification(channel=channel, summary=summary)
 
     return NotificationResult(
         channel=channel,
@@ -285,20 +307,46 @@ async def notify_owner(
     )
 
 
-async def _call_tool_with_fallbacks(
+async def _call_tool_variants(
     client: DynatraceMCPClient,
-    name: str,
-    candidates: list[dict[str, Any]],
+    variants: list[tuple[str, dict[str, Any]]],
 ) -> dict[str, Any]:
-    """Try several argument shapes for a tool before failing."""
+    """Try several (tool_name, arguments) pairs before failing.
+
+    Tool names and argument shapes differ between the platform-hosted MCP
+    gateway and the standalone Dynatrace MCP server. We try the verified
+    live-gateway variant first, then legacy shapes, and surface the first
+    success.
+    """
 
     errors: list[str] = []
-    for arguments in candidates:
+    for name, arguments in variants:
         try:
             return await client.call_tool(name, arguments)
         except Exception as exc:
-            errors.append(f"{arguments}: {exc}")
-    raise RuntimeError(f"All attempts failed for {name}: {' | '.join(errors)}")
+            errors.append(f"{name}{list(arguments)}: {exc}")
+    raise RuntimeError(f"All tool variants failed: {' | '.join(errors)}")
+
+
+def _general_parameters(lookback_minutes: int) -> dict[str, Any]:
+    """Build the generalParameters.timeframe payload the analyzers expect."""
+
+    return {"timeframe": {"startTime": f"now-{lookback_minutes}m", "endTime": "now"}}
+
+
+def _build_timeseries_query(*, service_name: str, lookback_minutes: int, metric: str) -> str:
+    """Return a single-series DQL query for a Davis timeseries analyzer.
+
+    The changepoint and forecasting analyzers take one timeseries (via DQL),
+    not the tabular runtime-signals query. p95 latency drives changepoint
+    detection; token burn drives the cost forecast.
+    """
+
+    measure = "avg(llm.tokens.total)" if metric == "tokens_per_request" else "percentile(duration, 95)"
+    return (
+        f"timeseries value = {measure}, interval: 5m, from: now-{lookback_minutes}m, "
+        f'filter: {{ service.name == "{service_name}" }}'
+    )
 
 
 def _normalize_mcp_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -381,20 +429,6 @@ def _summarize_runtime_signals(rows: list[dict[str, Any]], *, release_id: str | 
     if rows:
         return f"Retrieved {len(rows)} runtime signal rows from Dynatrace."
     return "Dynatrace query completed, but no structured rows were returned."
-
-
-def _analyzer_parameters(*, service_name: str, release_id: str | None) -> dict[str, Any]:
-    """Return a permissive analyzer input payload with common field variants."""
-
-    payload: dict[str, Any] = {
-        "service_name": service_name,
-        "serviceName": service_name,
-        "entity_name": service_name,
-    }
-    if release_id:
-        payload["release_id"] = release_id
-        payload["releaseId"] = release_id
-    return payload
 
 
 def _pick_first_string(payload: dict[str, Any], keys: list[str]) -> str | None:
