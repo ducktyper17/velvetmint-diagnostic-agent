@@ -233,11 +233,19 @@ async def draft_notebook(
     *,
     title: str,
     summary: str,
+    evidence: dict[str, Any] | None = None,
 ) -> NotebookResult:
-    """Create a Dynatrace notebook for the current investigation."""
+    """Create a Dynatrace notebook for the current investigation.
+
+    When ``evidence`` (the accumulated runtime-signal, changepoint, and forecast
+    results from earlier in the loop) is supplied, the notebook is built as a
+    full multi-section investigation artifact rather than a single blurb.
+    """
 
     if client._settings.stub_dynatrace_tools:
         return _stub_notebook(client, title)
+
+    sections = _notebook_sections(title=title, summary=summary, evidence=evidence or {})
 
     # The platform MCP gateway exposes read-only document tools (find-documents)
     # but no notebook-creation tool. Create a REAL Dynatrace notebook directly via
@@ -245,7 +253,7 @@ async def draft_notebook(
     # to the legacy MCP tool name, then to a deterministic stub. This produces a
     # genuine, shareable artifact in the tenant — the thing an operator opens.
     try:
-        raw = await _create_notebook_document(client, title=title, markdown=summary)
+        raw = await _create_notebook_document(client, title=title, sections=sections)
         notebook_id = str(raw.get("id") or "unknown-notebook")
         return NotebookResult(
             title=str(raw.get("name") or title),
@@ -491,22 +499,95 @@ def _notebook_url(client: DynatraceMCPClient, notebook_id: str) -> str:
     return f"{base}/ui/apps/dynatrace.notebooks/notebook/{notebook_id}"
 
 
+def _notebook_sections(
+    *, title: str, summary: str, evidence: dict[str, Any]
+) -> list[str]:
+    """Build the markdown tiles for an investigation notebook from real evidence.
+
+    ``evidence`` is keyed by tool name (query_runtime_signals, run_change_analysis,
+    forecast_blast_radius) with each tool's result dict. Missing pieces are simply
+    omitted, so the notebook degrades gracefully if a step was skipped.
+    """
+
+    signals = evidence.get("query_runtime_signals") or {}
+    change = evidence.get("run_change_analysis") or {}
+    forecast = evidence.get("forecast_blast_radius") or {}
+
+    service = signals.get("service_name") or "the service"
+    release = signals.get("release_id") or "the latest release"
+
+    sections: list[str] = [
+        f"# {title}\n\n"
+        f"**Service:** `{service}`  **Release:** `{release}`\n\n"
+        "Autonomous investigation by the Agent Reliability Guard: runtime signals "
+        "from Dynatrace, Davis changepoint + forecast, and a recommended fix."
+    ]
+    if summary:
+        sections.append(f"## Summary\n\n> {summary}")
+
+    rows = signals.get("rows") or []
+    if rows:
+        table = _markdown_table(rows)
+        dql = signals.get("dql")
+        block = "## Runtime signals\n\n"
+        if dql:
+            block += f"```\n{dql}\n```\n\n"
+        block += table
+        sections.append(block)
+
+    if change.get("verdict"):
+        block = f"## Changepoint (Davis)\n\n**Analyzer:** `{change.get('analyzer_name', 'changepoint')}`\n\n{change['verdict']}"
+        if change.get("evidence"):
+            block += f"\n\n{change['evidence']}"
+        sections.append(block)
+
+    if forecast.get("verdict"):
+        block = f"## Forecast — blast radius if unfixed (Davis)\n\n**Analyzer:** `{forecast.get('analyzer_name', 'forecast')}`\n\n{forecast['verdict']}"
+        if forecast.get("evidence"):
+            block += f"\n\n{forecast['evidence']}"
+        sections.append(block)
+
+    return sections
+
+
+def _markdown_table(rows: list[dict[str, Any]]) -> str:
+    """Render a list of flat dict rows as a GitHub-flavored markdown table."""
+
+    cols: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in cols:
+                cols.append(key)
+    if not cols:
+        return ""
+    header = "| " + " | ".join(cols) + " |"
+    divider = "| " + " | ".join("---" for _ in cols) + " |"
+    body = "\n".join(
+        "| " + " | ".join(str(row.get(c, "")) for c in cols) + " |" for row in rows
+    )
+    return f"{header}\n{divider}\n{body}"
+
+
 async def _create_notebook_document(
-    client: DynatraceMCPClient, *, title: str, markdown: str
+    client: DynatraceMCPClient, *, title: str, sections: list[str]
 ) -> dict[str, Any]:
     """Create a real Dynatrace notebook via the Documents REST API.
 
     The platform MCP gateway has no notebook-write tool, so this posts directly
     to /platform/document/v1/documents (multipart) using the same platform token,
     which carries document:documents:write. Verified against tenant rzw85677.
+    Each entry in ``sections`` becomes a markdown tile in the notebook.
     """
 
     base = str(client._settings.dynatrace_environment_url).rstrip("/")
     url = f"{base}/platform/document/v1/documents"
     content = {
         "version": "7",
-        "defaultTimeframe": {"from": "now-2h", "to": "now"},
-        "sections": [{"id": "summary", "type": "markdown", "markdown": markdown}],
+        "defaultTimeframe": {"from": "now-3h", "to": "now"},
+        "sections": [
+            {"id": f"s{i}", "type": "markdown", "markdown": md}
+            for i, md in enumerate(sections)
+        ],
     }
     token = client._settings.dynatrace_mcp_token.get_secret_value()
     files = {

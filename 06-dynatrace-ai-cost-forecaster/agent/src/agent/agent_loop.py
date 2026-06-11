@@ -25,7 +25,6 @@ from agent.tools import (
     run_change_analysis,
 )
 
-
 log = logging.getLogger(__name__)
 
 
@@ -78,6 +77,9 @@ async def run_agent_loop(
         {"role": "system", "content": prompts.render_few_shots()},
         {"role": "user", "content": request.question},
     ]
+    # Accumulated read-tool results, keyed by tool name, so a later draft_notebook
+    # call can assemble a full evidence-backed notebook instead of a blurb.
+    evidence: dict[str, Any] = {}
 
     for iteration in range(1, settings.agent_max_iterations + 1):
         try:
@@ -131,12 +133,22 @@ async def run_agent_loop(
 
         results = await asyncio.gather(
             *(
-                _dispatch_tool(call, mcp=mcp, settings=settings, request=request)
+                _dispatch_tool(
+                    call, mcp=mcp, settings=settings, request=request, evidence=evidence
+                )
                 for call in actionable
             )
         )
 
         for call, tool_result in zip(actionable, results, strict=True):
+            # Remember read-tool results so a later draft_notebook in this run can
+            # build the full evidence notebook.
+            if call.name in {
+                "query_runtime_signals",
+                "run_change_analysis",
+                "forecast_blast_radius",
+            }:
+                evidence[call.name] = tool_result
             yield AgentEvent(
                 "tool_result", {"name": call.name, "result": tool_result}, iteration
             )
@@ -160,6 +172,7 @@ async def _dispatch_tool(
     mcp: DynatraceMCPClient,
     settings: Settings,
     request: AgentRequest,
+    evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute one tool call and return its result dict (never raises)."""
 
@@ -207,6 +220,7 @@ async def _dispatch_tool(
                         )
                     ),
                     summary=str(args.get("summary", "Investigation evidence notebook.")),
+                    evidence=evidence,
                 )
             ).model_dump()
         if call.name == "notify_owner":
