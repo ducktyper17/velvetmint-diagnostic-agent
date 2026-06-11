@@ -1,47 +1,61 @@
 "use client";
 
-import { useState } from "react";
+const PHOENIX_URL =
+  process.env.NEXT_PUBLIC_PHOENIX_URL || "https://app.phoenix.arize.com/s/ghac";
 
-const DEFAULT_PHOENIX_URL =
-  process.env.NEXT_PUBLIC_PHOENIX_URL ||
-  "https://app.phoenix.arize.com";
+// Phoenix Cloud sets X-Frame-Options / CSP frame-ancestors that block being
+// embedded in an iframe, so we render a deep-link card instead of a broken
+// frame. The card lists exactly what lives in the workspace so a reviewer
+// knows what they'll see when they click through.
+const ARTIFACTS: { label: string; detail: string }[] = [
+  { label: "Datasets", detail: "velvetmint-support.scenarios — 30 versioned test scenarios" },
+  { label: "Prompts", detail: "sut-velvetmint-support v1 → v2, plus 6 judge prompts" },
+  { label: "Experiments", detail: "baseline vs post-fix, 6 dimensions × replicas" },
+  { label: "Traces & sessions", detail: "every SUT turn auto-instrumented via OpenInference" },
+];
 
 export function PhoenixPanel() {
-  const [url, setUrl] = useState(DEFAULT_PHOENIX_URL);
-  const [showInput, setShowInput] = useState(false);
-
   return (
     <section className="rounded-lg border border-zinc-800 bg-ink-900 overflow-hidden h-full flex flex-col">
       <header className="px-4 py-2 border-b border-zinc-800 flex items-center justify-between">
         <h2 className="text-xs uppercase tracking-widest text-zinc-500">
           Phoenix workspace
         </h2>
-        <button
-          className="text-xs text-zinc-500 hover:text-plum-400 transition"
-          onClick={() => setShowInput((v) => !v)}
-        >
-          {showInput ? "hide" : "set URL"}
-        </button>
+        <span className="text-xs text-zinc-600">canonical record</span>
       </header>
-      {showInput && (
-        <div className="px-3 py-2 border-b border-zinc-800 bg-ink-800">
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://app.phoenix.arize.com/s/your-space"
-            className="w-full bg-ink-950 border border-zinc-700 rounded px-2 py-1 text-xs"
-          />
-        </div>
-      )}
-      <iframe
-        title="Arize Phoenix"
-        src={url}
-        className="grow w-full bg-ink-950"
-        sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-      />
+
+      <div className="grow p-4 flex flex-col gap-4">
+        <p className="text-sm text-zinc-300">
+          Every audit is written to Arize Phoenix as first-class objects. The
+          QA agent reads and writes them at runtime through the Phoenix MCP
+          server — Phoenix is the system of record, not just a viewer.
+        </p>
+
+        <ul className="flex flex-col gap-2">
+          {ARTIFACTS.map((a) => (
+            <li
+              key={a.label}
+              className="rounded border border-zinc-800 bg-ink-800 px-3 py-2"
+            >
+              <p className="text-sm font-medium text-plum-300">{a.label}</p>
+              <p className="text-xs text-zinc-400">{a.detail}</p>
+            </li>
+          ))}
+        </ul>
+
+        <a
+          href={PHOENIX_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-auto inline-flex items-center justify-center rounded-md bg-plum-500/90 hover:bg-plum-500 text-ink-950 font-medium text-sm px-3 py-2 transition"
+        >
+          Open the live Phoenix workspace →
+        </a>
+      </div>
+
       <footer className="px-4 py-2 border-t border-zinc-800 text-xs text-zinc-500">
-        Click into any trace, dataset, prompt version, or experiment row — Phoenix
-        is the canonical record of every audit.
+        Open Phoenix to click into any trace, dataset, prompt version, or
+        experiment row — the full audit trail is reproducible there.
       </footer>
     </section>
   );

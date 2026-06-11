@@ -76,15 +76,30 @@ export default function Page() {
   async function loadLoopReport() {
     setReport(null);
     setError(null);
-    try {
-      const rep = await fetch("/api/proxy/loop/report");
-      if (rep.ok) {
-        setReport(await rep.json());
-      } else {
-        setError("No loop report yet. Run scripts/run_loop.py first.");
+    setStatus("running");
+    // The backend scales to zero on Cloud Run; the first request after idle
+    // can cold-start (and briefly 5xx). Retry a few times with backoff so a
+    // single click "just works" instead of surfacing a transient error.
+    const maxAttempts = 6;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const rep = await fetch("/api/proxy/loop/report", { cache: "no-store" });
+        if (rep.ok) {
+          setReport(await rep.json());
+          setStatus("complete");
+          return;
+        }
+      } catch {
+        /* transient during cold start — fall through to retry */
       }
-    } catch (e: any) {
-      setError(e?.message || String(e));
+      if (attempt === maxAttempts) {
+        setStatus("failed");
+        setError(
+          "Waking the demo backend (Cloud Run cold start). Give it a few seconds and click again."
+        );
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
     }
   }
 
