@@ -48,10 +48,19 @@ customer-support agent shipping with three injected pathologies: a
 hallucinated "90-day price-match guarantee," a Spanish code-switch blind
 spot, and an "always try to resolve fraud in-channel" misbehavior.
 
-The demo's payoff: on screen, the hallucination rate goes from 71% to 94%
-correct after a single autonomous prompt rewrite — and every number links
-back to a real conversation, a real judge rationale, and a versioned
-prompt in Phoenix.
+The demo's payoff: in a single autonomous cycle, the QA agent **surgically
+removes three flawed rules** from the SUT's system prompt — the
+hallucinated price-match policy, the "guess when unsure" rule, and the
+"resolve fraud in-channel" rule — and appends one consolidated safety
+guardrail. The targeted pass rate climbs from **63% to 73%** (accuracy
++0.13, escalation +0.12); five scenarios flip from fail to pass, including
+the hero hallucination case. On the exact same customer message, the agent
+goes from *"Yes, we offer a 90-day price-match guarantee!"* to *"I don't
+have any information about that — would you like me to escalate to a human
+teammate?"* Two scenarios regress, and the agent flags them for the next
+cycle — honest tradeoffs, not hidden ones. Every number links back to a
+real conversation, a real judge rationale, and a versioned prompt in
+Phoenix.
 
 ## How we built it
 
@@ -101,9 +110,13 @@ prompt in Phoenix.
   added an additive-only check in `mutate_sut_prompt` so the diff is
   always small and legible.
 - **LLM-as-judge variance.** Single-replica judging was too noisy to make
-  a delta defensible. We run three replicas per dimension and surface a
-  paired Wilcoxon p-value so the improvement is statistically grounded,
-  not just vibes.
+  a delta defensible. We run three-to-five replicas per dimension, report
+  median and IQR, and surface a paired sign-test p-value for every
+  dimension — including where it is *not* significant. At n=30 the
+  aggregate deltas are directional, not yet significant; we say so plainly
+  rather than cherry-picking. The per-scenario flips (e.g. the hallucinated
+  policy going from confidently-stated to correctly-refused) are the
+  unambiguous evidence.
 - **Trace volume.** A full 30-scenario audit produces ~600 spans. We
   filter to failure-only spans before clustering so the cluster step
   doesn't drown.

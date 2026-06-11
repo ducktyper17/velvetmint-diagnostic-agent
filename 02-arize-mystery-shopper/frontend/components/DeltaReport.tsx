@@ -79,12 +79,25 @@ export function DeltaReport({ report }: { report: Report }) {
         <div className="px-4 py-3 border-b border-zinc-800">
           <h3 className="text-xs uppercase tracking-widest text-zinc-500 mb-1">
             SUT system-prompt diff
+            {Array.isArray(mutation.removed_flaw_lines) &&
+              mutation.removed_flaw_lines.length > 0 && (
+                <span className="ml-2 text-rose-400 normal-case tracking-normal">
+                  −{mutation.removed_flaw_lines.length} flawed{" "}
+                  {mutation.removed_flaw_lines.length === 1 ? "rule" : "rules"} removed
+                </span>
+              )}
           </h3>
-          <p className="text-xs text-zinc-400 mb-2">
-            {mutation.rationale || ""}
-          </p>
-          <pre className="rounded bg-ink-800 border border-zinc-800 p-2 text-xs text-teal-300 whitespace-pre-wrap break-words overflow-x-auto">
-+ {mutation.appended || mutation.new_prompt}
+          <p className="text-xs text-zinc-400 mb-2">{mutation.rationale || ""}</p>
+          <pre className="rounded bg-ink-800 border border-zinc-800 p-2 text-xs whitespace-pre-wrap break-words overflow-x-auto leading-relaxed">
+            {Array.isArray(mutation.removed_flaw_lines) &&
+              mutation.removed_flaw_lines.map((line: string, i: number) => (
+                <div key={`r${i}`} className="text-rose-400">
+                  − {line}
+                </div>
+              ))}
+            {mutation.appended && (
+              <div className="text-teal-300">+ {mutation.appended}</div>
+            )}
           </pre>
         </div>
       )}
@@ -103,10 +116,25 @@ export function DeltaReport({ report }: { report: Report }) {
           {DIMS.map((dim) => {
             const d = delta[dim];
             if (!d) return null;
+            // Bias is a paired-A/B dimension; degenerate in single-conversation
+            // scoring. Dim it and tag so it doesn't read as a broken 0.00→0.00.
+            const isBias = dim === "bias";
             const sign = d.delta == null ? 0 : Math.sign(d.delta);
             return (
-              <tr key={dim} className="border-t border-zinc-900">
-                <td className="px-4 py-2 text-zinc-300">{dim}</td>
+              <tr
+                key={dim}
+                className={
+                  "border-t border-zinc-900 " + (isBias ? "opacity-40" : "")
+                }
+              >
+                <td className="px-4 py-2 text-zinc-300">
+                  {dim}
+                  {isBias && (
+                    <span className="ml-1 text-[10px] text-zinc-500">
+                      (paired eval)
+                    </span>
+                  )}
+                </td>
                 <td className="px-4 py-2 text-right tabular-nums text-zinc-400">
                   {fmt(d.baseline_mean)}
                 </td>
