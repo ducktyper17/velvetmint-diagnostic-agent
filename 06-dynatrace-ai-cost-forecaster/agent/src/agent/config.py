@@ -8,7 +8,6 @@ from typing import Literal
 from pydantic import Field, HttpUrl, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 Environment = Literal["local", "dev", "demo", "prod"]
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 SYSTEM_PROMPT = """\
 You are Agent Reliability Guard.
 

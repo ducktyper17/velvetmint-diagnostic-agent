@@ -19,7 +19,6 @@ from agent.agent_loop import AgentEvent, AgentRequest, run_agent_loop, run_repla
 from agent.config import Settings, get_settings
 from agent.tools import DynatraceMCPClient
 
-
 log = logging.getLogger(__name__)
 
 
