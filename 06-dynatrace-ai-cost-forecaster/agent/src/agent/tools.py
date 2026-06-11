@@ -240,10 +240,23 @@ async def draft_notebook(
         return _stub_notebook(client, title)
 
     # The platform MCP gateway exposes read-only document tools (find-documents)
-    # but no notebook-creation tool, so we try the legacy standalone-server tool
-    # name and gracefully fall back to a deterministic notebook record (pointing
-    # at the real tenant URL) when it is not available. Creating a real notebook
-    # would require the Documents REST API directly, outside MCP.
+    # but no notebook-creation tool. Create a REAL Dynatrace notebook directly via
+    # the Documents REST API (token scope document:documents:write), then fall back
+    # to the legacy MCP tool name, then to a deterministic stub. This produces a
+    # genuine, shareable artifact in the tenant — the thing an operator opens.
+    try:
+        raw = await _create_notebook_document(client, title=title, markdown=summary)
+        notebook_id = str(raw.get("id") or "unknown-notebook")
+        return NotebookResult(
+            title=str(raw.get("name") or title),
+            notebook_id=notebook_id,
+            url=_notebook_url(client, notebook_id),
+            status="created",
+            raw=raw,
+        )
+    except Exception as exc:
+        log.info("draft_notebook.documents_api_failed", extra={"error": str(exc)[:200]})
+
     try:
         raw = await _call_tool_variants(
             client,
@@ -469,6 +482,46 @@ def _notebook_fallback_url(client: DynatraceMCPClient, title: str) -> str:
 
     slug = title.lower().replace(" ", "-")[:48]
     return f"{client._settings.dynatrace_environment_url}/ui/document/v0/#notebook/{slug}"
+
+
+def _notebook_url(client: DynatraceMCPClient, notebook_id: str) -> str:
+    """Build the Notebooks app URL for a created document id."""
+
+    base = str(client._settings.dynatrace_environment_url).rstrip("/")
+    return f"{base}/ui/apps/dynatrace.notebooks/notebook/{notebook_id}"
+
+
+async def _create_notebook_document(
+    client: DynatraceMCPClient, *, title: str, markdown: str
+) -> dict[str, Any]:
+    """Create a real Dynatrace notebook via the Documents REST API.
+
+    The platform MCP gateway has no notebook-write tool, so this posts directly
+    to /platform/document/v1/documents (multipart) using the same platform token,
+    which carries document:documents:write. Verified against tenant rzw85677.
+    """
+
+    base = str(client._settings.dynatrace_environment_url).rstrip("/")
+    url = f"{base}/platform/document/v1/documents"
+    content = {
+        "version": "7",
+        "defaultTimeframe": {"from": "now-2h", "to": "now"},
+        "sections": [{"id": "summary", "type": "markdown", "markdown": markdown}],
+    }
+    token = client._settings.dynatrace_mcp_token.get_secret_value()
+    files = {
+        "name": (None, title),
+        "type": (None, "notebook"),
+        "content": ("content.json", json.dumps(content), "application/json"),
+    }
+    # Use a dedicated client: the shared MCP client pins Content-Type: application/json,
+    # which would clobber the multipart boundary httpx sets for a file upload.
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as doc:
+        resp = await doc.post(
+            url, headers={"Authorization": f"Bearer {token}"}, files=files
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
 def _stub_runtime_signals(
